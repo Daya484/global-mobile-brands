@@ -8,18 +8,23 @@ Production-grade GCP pipeline: **Cloud Run Jobs → Dataproc (PySpark) → BigQu
 
 ```
 ├─ ingestion/              Cloud Run Job — reads Excel from GCS, writes CSVs to landing/
-│  ├─ main.py
+│  ├─ config/
+│  │   └─ config.json      project, buckets, brands, log_level, max_workers
+│  ├─ main.py              all logic: config loader, GCS helpers, extract, upload
 │  ├─ requirements.txt
 │  └─ Dockerfile
 
 ├─ transform/              Cloud Run Job — cleans CSVs (multi-threaded), writes to transform/
-│  ├─ main.py
-│  ├─ transform.py
+│  ├─ config/
+│  │   └─ config.json      pipeline_bucket, landing_path, transform_path
+│  ├─ main.py              all logic: config loader, GCS helpers, clean, upload
 │  ├─ requirements.txt
 │  └─ Dockerfile
 
 ├─ archival/               Cloud Run Job — moves landing/ + transform/ → archive/
-│  ├─ main.py
+│  ├─ config/
+│  │   └─ config.json      archive_map: {landing/→archive/landing/, transform/→archive/transform/}
+│  ├─ main.py              all logic: config loader, collect blobs, parallel move
 │  ├─ requirements.txt
 │  └─ Dockerfile
 
@@ -32,6 +37,7 @@ Production-grade GCP pipeline: **Cloud Run Jobs → Dataproc (PySpark) → BigQu
 │  └─ dag_end_to_end_pipeline.py
 
 ├─ cloudbuild.yaml         CI/CD: build 3 Docker images, deploy Cloud Run Jobs, sync scripts
+├─ README.md
 └─ .gcloudignore
 ```
 

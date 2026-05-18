@@ -8,7 +8,7 @@ steps:
       - "${_REGISTRY}/mb-ingestion:$SHORT_SHA"
       - -t
       - "${_REGISTRY}/mb-ingestion:latest"
-      - ./ingestion
+      - ./01-ingestion
 
   - name: gcr.io/cloud-builders/docker
     id: push-ingestion
@@ -24,7 +24,7 @@ steps:
       - "${_REGISTRY}/mb-transform:$SHORT_SHA"
       - -t
       - "${_REGISTRY}/mb-transform:latest"
-      - ./transform
+      - ./02-transform
 
   - name: gcr.io/cloud-builders/docker
     id: push-transform
@@ -40,7 +40,7 @@ steps:
       - "${_REGISTRY}/mb-archival:$SHORT_SHA"
       - -t
       - "${_REGISTRY}/mb-archival:latest"
-      - ./archival
+      - ./03-archival
 
   - name: gcr.io/cloud-builders/docker
     id: push-archival
@@ -96,9 +96,9 @@ steps:
     args:
       - storage
       - cp
-      - dataproc_jobs/bronze.py
-      - dataproc_jobs/silver.py
-      - dataproc_jobs/gold.py
+      - 04-dataproc_jobs/bronze.py
+      - 04-dataproc_jobs/silver.py
+      - 04-dataproc_jobs/gold.py
       - "gs://${_PIPELINE_BUCKET}/scripts/"
     waitFor: ["-"]   # runs immediately, no image dependency
 
@@ -108,7 +108,7 @@ steps:
     args:
       - storage
       - cp
-      - airflow/dag_end_to_end_pipeline.py
+      - 05-airflow/dag_end_to_end_pipeline.py
       - "gs://${_COMPOSER_BUCKET}/dags/"
     waitFor: ["-"]
 
