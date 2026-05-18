@@ -1,0 +1,12 @@
+# Ignore local/dev files when deploying with gcloud builds submit
+.git/
+.gitignore
+**/__pycache__/
+**/*.pyc
+**/.env
+**/*.egg-info/
+.venv/
+venv/
+*.log
+.DS_Store
+Thumbs.db

@@ -1,0 +1,10 @@
+{
+  "project_name": "dv-env",
+  "pipeline_bucket": "dv-mb-pipeline-bucket",
+  "archive_map": {
+    "landing/":   "archive/landing/",
+    "transform/": "archive/transform/"
+  },
+  "log_level": "INFO",
+  "max_workers": 8
+}

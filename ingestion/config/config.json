@@ -1,0 +1,9 @@
+{
+  "project_name": "dv-env",
+  "source_bucket": "dv-mobile-brands",
+  "destination_bucket": "dv-mb-pipeline-bucket",
+  "landing_path": "landing",
+  "brands": ["Samsung", "Apple", "Oppo", "Vivo", "OnePlus"],
+  "log_level": "INFO",
+  "max_workers": 8
+}
