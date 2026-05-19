@@ -1,7 +1,14 @@
 FROM python:3.11-slim
+
 WORKDIR /app
+
+# show logs immediately in Cloud Run logs
+ENV PYTHONUNBUFFERED=True
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY config/ config/
+
 COPY main.py .
+COPY config/ config/
+
 CMD ["python", "main.py"]

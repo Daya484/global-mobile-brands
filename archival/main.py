@@ -1,156 +1,167 @@
 """
-archival/main.py — Cloud Run Job: Archive landing/ + transform/ files
-======================================================================
-Config loaded from config/config.json (overrideable by env vars).
-Moves both landing/ and transform/ files to archive/ in parallel.
+Cloud Run Job: Archive Files (Landing + Transformed)
+===================================================
 
-Preserves source folder structure via .keep placeholder files.
+This job moves files from:
+
+1. landing/<COUNTRY>/file.xlsx
+→ archive_landing/YYYY-MM-DD/<COUNTRY>/file.xlsx
+
+2. transformed/<brand>/file.csv
+→ archive_transformed/YYYY-MM-DD/<brand>/file.csv
+
+✅ Works exactly like your GCS screenshot
+✅ Safe: uses copy + delete (GCS move)
+✅ Supports Airflow RUN_DATE
 """
 
-import json
-import logging
 import os
-import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from pathlib import Path
-from threading import Lock
-
+from datetime import date
+from concurrent.futures import ThreadPoolExecutor
 from google.cloud import storage
 
-# ── Config ────────────────────────────────────────────────────────────────────
 
-def load_config() -> dict:
-    cfg_path = Path(__file__).parent / "config" / "config.json"
-    with open(cfg_path) as f:
-        cfg = json.load(f)
-    overrides = {
-        "project_name":    os.getenv("PROJECT_NAME"),
-        "pipeline_bucket": os.getenv("DEST_BUCKET"),
-        "log_level":       os.getenv("LOG_LEVEL"),
-    }
-    for k, v in overrides.items():
-        if v is not None:
-            cfg[k] = v
-    return cfg
+# -----------------------------------------------------------------------------
+# CONFIG (ENV OR DEFAULTS)
+# -----------------------------------------------------------------------------
+BUCKET_NAME = os.getenv("BUCKET_NAME", "mobile_brands")
 
-# ── Logging ───────────────────────────────────────────────────────────────────
+LANDING_PREFIX = "landing"
+TRANSFORMED_PREFIX = "transformed"
 
-def setup_logging(level: str = "INFO") -> logging.Logger:
-    logging.basicConfig(
-        level=getattr(logging, level.upper(), logging.INFO),
-        format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
-        stream=sys.stdout,
-    )
-    return logging.getLogger("archival")
+ARCHIVE_LANDING = "archive_landing"
+ARCHIVE_TRANSFORMED = "archive_transformed"
 
-# ── GCS helpers ───────────────────────────────────────────────────────────────
+MAX_WORKERS = int(os.getenv("MAX_WORKERS", "10"))
 
-def get_gcs_client() -> storage.Client:
-    return storage.Client()
+# Airflow date
+RUN_DATE = os.getenv("RUN_DATE")
 
-def collect_blobs(client: storage.Client, bucket_name: str,
-                  archive_map: dict, dt: str, run_id: str) -> list[tuple]:
-    """Return [(src_name, dst_name)] for all files to archive."""
-    pairs = []
-    for src_prefix, dst_prefix in archive_map.items():
-        for b in client.list_blobs(bucket_name, prefix=src_prefix):
-            if b.name.endswith("/") or b.name.endswith(".keep") or b.size == 0:
+if RUN_DATE:
+    ARCHIVE_DATE = RUN_DATE
+    RUN_DATE_YYYYMMDD = RUN_DATE.replace("-", "")
+else:
+    ARCHIVE_DATE = date.today().strftime("%Y-%m-%d")
+    RUN_DATE_YYYYMMDD = date.today().strftime("%Y%m%d")
+
+
+# -----------------------------------------------------------------------------
+# GCS CLIENT
+# -----------------------------------------------------------------------------
+
+client = storage.Client()
+bucket = client.bucket(BUCKET_NAME)
+
+
+# -----------------------------------------------------------------------------
+# HELPERS
+# -----------------------------------------------------------------------------
+
+def list_files(prefix, extensions):
+    """
+    List files in a prefix filtering by extension
+    """
+    files = []
+
+    for blob in bucket.list_blobs(prefix=f"{prefix}/"):
+        if blob.name.endswith("/"):
+            continue
+        if any(blob.name.lower().endswith(ext) for ext in extensions):
+
+            # ✅ Only move today's files (important)
+            if RUN_DATE_YYYYMMDD not in blob.name:
                 continue
-            if dt and f"dt={dt}" not in b.name:
-                continue
-            if run_id and run_id != "manual" and f"run_id={run_id}" not in b.name:
-                continue
-            pairs.append((b.name, b.name.replace(src_prefix, dst_prefix, 1)))
-    return pairs
 
-def ensure_placeholder(bucket: storage.Bucket, src_name: str):
-    """Leave a .keep file so the source folder still appears in GCS."""
-    folder = "/".join(src_name.split("/")[:-1]) + "/.keep"
-    ph = bucket.blob(folder)
-    if not ph.exists():
-        ph.upload_from_string(b"", content_type="application/octet-stream")
+            files.append(blob.name)
 
-def move_blob(client: storage.Client, bucket: storage.Bucket,
-              src_name: str, dst_name: str) -> str:
-    """Copy to archive path, delete original, leave .keep placeholder."""
+    return files
+
+
+def move_file(src_path, dest_path):
+    """
+    Move file using copy + delete
+    """
     try:
-        src_blob = bucket.blob(src_name)
-        bucket.copy_blob(src_blob, bucket, dst_name)
-        src_blob.delete()
-        ensure_placeholder(bucket, src_name)
-        return f"OK: {src_name}"
-    except Exception as exc:
-        return f"FAILED: {src_name} — {exc}"
+        source_blob = bucket.blob(src_path)
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+        # Copy
+        bucket.copy_blob(source_blob, bucket, dest_path)
 
-_lock    = Lock()
-_success = 0
-_failed  = 0
-_errors  = []
+        # Delete original
+        source_blob.delete()
+
+        print(f"✅ Moved: {src_path} → {dest_path}")
+
+    except Exception as e:
+        print(f"❌ Error moving {src_path}: {e}")
 
 
-def _move_with_tracking(client, bucket, src, dst) -> str:
-    global _success, _failed
-    result = move_blob(client, bucket, src, dst)
-    with _lock:
-        if result.startswith("OK"):
-            _success += 1
-        else:
-            _failed += 1
-            _errors.append(src)
-    return result
+# -----------------------------------------------------------------------------
+# LANDING ARCHIVE
+# -----------------------------------------------------------------------------
 
+def archive_landing():
+    """
+    Move Excel files from landing → archive_landing
+    """
+    files = list_files(LANDING_PREFIX, [".xlsx", ".xls"])
+
+    def process(src):
+        parts = src.split("/")
+        if len(parts) < 3:
+            return
+
+        country = parts[1]
+        file_name = parts[-1]
+
+        dest = f"{ARCHIVE_LANDING}/{ARCHIVE_DATE}/{country}/{file_name}"
+
+        move_file(src, dest)
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        executor.map(process, files)
+
+
+# -----------------------------------------------------------------------------
+# TRANSFORMED ARCHIVE
+# -----------------------------------------------------------------------------
+
+def archive_transformed():
+    """
+    Move CSV files from transformed → archive_transformed
+    """
+    files = list_files(TRANSFORMED_PREFIX, [".csv"])
+
+    def process(src):
+        parts = src.split("/")
+        if len(parts) < 3:
+            return
+
+        brand = parts[1]
+        file_name = parts[-1]
+
+        dest = f"{ARCHIVE_TRANSFORMED}/{ARCHIVE_DATE}/{brand}/{file_name}"
+
+        move_file(src, dest)
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        executor.map(process, files)
+
+
+# -----------------------------------------------------------------------------
+# MAIN
+# -----------------------------------------------------------------------------
 
 def main():
-    global _success, _failed
-    _success = _failed = 0
+    print(f"\n🚀 Starting Archive Job for date: {ARCHIVE_DATE}\n")
 
-    cfg = load_config()
-    log = setup_logging(cfg.get("log_level", "INFO"))
+    print("📦 Archiving LANDING files...")
+    archive_landing()
 
-    bucket_name = cfg["pipeline_bucket"]
-    archive_map = cfg["archive_map"]
-    dt          = os.getenv("DT", "")
-    run_id      = os.getenv("RUN_ID", "manual")
-    max_workers = cfg.get("max_workers", 8)
+    print("📦 Archiving TRANSFORMED files...")
+    archive_transformed()
 
-    log.info("Archival started | project=%s | bucket=%s | dt=%s | run_id=%s",
-             cfg["project_name"], bucket_name, dt, run_id)
-
-    client = get_gcs_client()
-    bucket = client.bucket(bucket_name)
-    pairs  = collect_blobs(client, bucket_name, archive_map, dt, run_id)
-
-    if not pairs:
-        log.info("No files to archive — nothing to do.")
-        sys.exit(0)
-
-    log.info("Archiving %d file(s) with %d workers...", len(pairs), max_workers)
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(_move_with_tracking, client, bucket, src, dst)
-                   for src, dst in pairs]
-        for future in as_completed(futures):
-            result = future.result()
-            if "FAILED" in result:
-                log.error(result)
-
-    print("\n" + "=" * 60)
-    print("              ARCHIVAL REPORT")
-    print("=" * 60)
-    print(f"Total Files: {len(pairs)}")
-    print(f"Archived:    {_success}")
-    print(f"Failed:      {_failed}")
-    if _errors:
-        print("\nFailed files:")
-        for f in _errors:
-            print(f"  - {f}")
-    print(f"\nArchive path: gs://{bucket_name}/archive/")
-    print("=" * 60)
-
-    if _failed > 0:
-        sys.exit(1)
+    print("\n✅ Archive Completed Successfully\n")
 
 
 if __name__ == "__main__":

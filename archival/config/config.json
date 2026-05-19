@@ -1,10 +1,18 @@
 {
   "project_name": "dv-env",
-  "pipeline_bucket": "dv-mb-pipeline-bucket",
-  "archive_map": {
-    "landing/":   "archive/landing/",
-    "transform/": "archive/transform/"
-  },
+  "bucket_name": "mobile_brands",
+
+  "landing_prefix": "landing",
+  "transformed_root": "transformed",
+
+  "archive_landing_root": "archive_landing",
+  "archive_transformed_root": "archive_transformed",
+
+  "excel_extensions": [".xlsx", ".xls", ".xlsm"],
+  "csv_extensions": [".csv"],
+
+  "max_workers": 16,
   "log_level": "INFO",
-  "max_workers": 8
+
+  "skip_if_destination_exists": true
 }
