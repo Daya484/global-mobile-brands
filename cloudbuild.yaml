@@ -1,126 +1,151 @@
 steps:
-  # ─── Build & push ingestion image ──────────────────────────────────────────
-  - name: gcr.io/cloud-builders/docker
-    id: build-ingestion
-    args:
-      - build
-      - -t
-      - "${_REGISTRY}/mb-ingestion:$SHORT_SHA"
-      - -t
-      - "${_REGISTRY}/mb-ingestion:latest"
-      - ./01-ingestion
 
-  - name: gcr.io/cloud-builders/docker
-    id: push-ingestion
-    args: [push, "--all-tags", "${_REGISTRY}/mb-ingestion"]
-    waitFor: [build-ingestion]
+# ───────────────────────────────────────────
+# 1. BUILD & PUSH IMAGES
+# ───────────────────────────────────────────
 
-  # ─── Build & push transform image ──────────────────────────────────────────
-  - name: gcr.io/cloud-builders/docker
-    id: build-transform
-    args:
-      - build
-      - -t
-      - "${_REGISTRY}/mb-transform:$SHORT_SHA"
-      - -t
-      - "${_REGISTRY}/mb-transform:latest"
-      - ./02-transform
+- name: gcr.io/cloud-builders/docker
+  id: build-ingestion
+  args:
+    [
+      "build",
+      "-t", "${_REGISTRY}/mb-ingestion:$SHORT_SHA",
+      "-t", "${_REGISTRY}/mb-ingestion:latest",
+      "./01-ingestion"
+    ]
 
-  - name: gcr.io/cloud-builders/docker
-    id: push-transform
-    args: [push, "--all-tags", "${_REGISTRY}/mb-transform"]
-    waitFor: [build-transform]
+- name: gcr.io/cloud-builders/docker
+  id: push-ingestion
+  args: ["push", "--all-tags", "${_REGISTRY}/mb-ingestion"]
+  waitFor: ["build-ingestion"]
 
-  # ─── Build & push archival image ───────────────────────────────────────────
-  - name: gcr.io/cloud-builders/docker
-    id: build-archival
-    args:
-      - build
-      - -t
-      - "${_REGISTRY}/mb-archival:$SHORT_SHA"
-      - -t
-      - "${_REGISTRY}/mb-archival:latest"
-      - ./03-archival
 
-  - name: gcr.io/cloud-builders/docker
-    id: push-archival
-    args: [push, "--all-tags", "${_REGISTRY}/mb-archival"]
-    waitFor: [build-archival]
+- name: gcr.io/cloud-builders/docker
+  id: build-transform
+  args:
+    [
+      "build",
+      "-t", "${_REGISTRY}/mb-transform:$SHORT_SHA",
+      "-t", "${_REGISTRY}/mb-transform:latest",
+      "./02-transform"
+    ]
 
-  # ─── Deploy Cloud Run Jobs (version-pinned with $SHORT_SHA) ────────────────
-  - name: gcr.io/cloud-builders/gcloud
-    id: deploy-ingestion-job
-    args:
-      - run
-      - jobs
-      - deploy
-      - "${_ENV}-mb-ingestion"
-      - "--image=${_REGISTRY}/mb-ingestion:$SHORT_SHA"
-      - "--region=${_REGION}"
-      - "--service-account=${_SA_EMAIL}"
-      - "--set-env-vars=SOURCE_BUCKET=${_SOURCE_BUCKET},DEST_BUCKET=${_PIPELINE_BUCKET},LOG_LEVEL=INFO"
-      - "--project=${_PROJECT_ID}"
-    waitFor: [push-ingestion]
+- name: gcr.io/cloud-builders/docker
+  id: push-transform
+  args: ["push", "--all-tags", "${_REGISTRY}/mb-transform"]
+  waitFor: ["build-transform"]
 
-  - name: gcr.io/cloud-builders/gcloud
-    id: deploy-transform-job
-    args:
-      - run
-      - jobs
-      - deploy
-      - "${_ENV}-mb-transform"
-      - "--image=${_REGISTRY}/mb-transform:$SHORT_SHA"
-      - "--region=${_REGION}"
-      - "--service-account=${_SA_EMAIL}"
-      - "--set-env-vars=DEST_BUCKET=${_PIPELINE_BUCKET},LOG_LEVEL=INFO"
-      - "--project=${_PROJECT_ID}"
-    waitFor: [push-transform]
 
-  - name: gcr.io/cloud-builders/gcloud
-    id: deploy-archival-job
-    args:
-      - run
-      - jobs
-      - deploy
-      - "${_ENV}-mb-archival"
-      - "--image=${_REGISTRY}/mb-archival:$SHORT_SHA"
-      - "--region=${_REGION}"
-      - "--service-account=${_SA_EMAIL}"
-      - "--set-env-vars=DEST_BUCKET=${_PIPELINE_BUCKET},LOG_LEVEL=INFO"
-      - "--project=${_PROJECT_ID}"
-    waitFor: [push-archival]
+- name: gcr.io/cloud-builders/docker
+  id: build-archival
+  args:
+    [
+      "build",
+      "-t", "${_REGISTRY}/mb-archival:$SHORT_SHA",
+      "-t", "${_REGISTRY}/mb-archival:latest",
+      "./03-archival"
+    ]
 
-  # ─── Sync Dataproc PySpark scripts to GCS ──────────────────────────────────
-  - name: gcr.io/cloud-builders/gcloud
-    id: sync-dataproc-scripts
-    args:
-      - storage
-      - cp
-      - 04-dataproc_jobs/bronze.py
-      - 04-dataproc_jobs/silver.py
-      - 04-dataproc_jobs/gold.py
-      - "gs://${_PIPELINE_BUCKET}/scripts/"
-    waitFor: ["-"]   # runs immediately, no image dependency
+- name: gcr.io/cloud-builders/docker
+  id: push-archival
+  args: ["push", "--all-tags", "${_REGISTRY}/mb-archival"]
+  waitFor: ["build-archival"]
 
-  # ─── Sync Airflow DAG to Composer bucket ───────────────────────────────────
-  - name: gcr.io/cloud-builders/gcloud
-    id: sync-dag
-    args:
-      - storage
-      - cp
-      - 05-airflow/dag_end_to_end_pipeline.py
-      - "gs://${_COMPOSER_BUCKET}/dags/"
-    waitFor: ["-"]
 
+# ───────────────────────────────────────────
+# 2. DEPLOY CLOUD RUN JOBS
+# ───────────────────────────────────────────
+
+- name: gcr.io/cloud-builders/gcloud
+  id: deploy-ingestion
+  args:
+    [
+      "run","jobs","deploy","${_ENV}-mb-ingestion",
+      "--image=${_REGISTRY}/mb-ingestion:$SHORT_SHA",
+      "--region=${_REGION}",
+      "--project=${_PROJECT_ID}",
+      "--service-account=${_SA_EMAIL}",
+      "--set-env-vars=BUCKET_NAME=${_SOURCE_BUCKET},PROJECT_ID=${_PROJECT_ID}",
+      "--max-retries=3",
+      "--tasks=1"
+    ]
+  waitFor: ["push-ingestion"]
+
+
+- name: gcr.io/cloud-builders/gcloud
+  id: deploy-transform
+  args:
+    [
+      "run","jobs","deploy","${_ENV}-mb-transform",
+      "--image=${_REGISTRY}/mb-transform:$SHORT_SHA",
+      "--region=${_REGION}",
+      "--project=${_PROJECT_ID}",
+      "--service-account=${_SA_EMAIL}",
+      "--set-env-vars=BUCKET_NAME=${_SOURCE_BUCKET},PROJECT_ID=${_PROJECT_ID}",
+      "--max-retries=3",
+      "--tasks=1"
+    ]
+  waitFor: ["push-transform"]
+
+
+- name: gcr.io/cloud-builders/gcloud
+  id: deploy-archive
+  args:
+    [
+      "run","jobs","deploy","${_ENV}-mb-archive",
+      "--image=${_REGISTRY}/mb-archival:$SHORT_SHA",
+      "--region=${_REGION}",
+      "--project=${_PROJECT_ID}",
+      "--service-account=${_SA_EMAIL}",
+      "--set-env-vars=BUCKET_NAME=${_SOURCE_BUCKET},PROJECT_ID=${_PROJECT_ID}",
+      "--max-retries=3",
+      "--tasks=1"
+    ]
+  waitFor: ["push-archival"]
+
+
+# ───────────────────────────────────────────
+# 3. SYNC DATAPROC SCRIPTS
+# ───────────────────────────────────────────
+
+- name: gcr.io/cloud-builders/gcloud
+  id: sync-scripts
+  args:
+    [
+      "storage","cp",
+      "04-dataproc_jobs/",
+      "gs://${_PIPELINE_BUCKET}/scripts/",
+      "--recursive"
+    ]
+
+
+# ───────────────────────────────────────────
+# 4. SYNC AIRFLOW DAG
+# ───────────────────────────────────────────
+
+- name: gcr.io/cloud-builders/gcloud
+  id: sync-dag
+  args:
+    [
+      "storage","cp",
+      "05-airflow/",
+      "gs://${_COMPOSER_BUCKET}/dags/",
+      "--recursive"
+    ]
+
+
+# ───────────────────────────────────────────
+# SUBSTITUTIONS
+# ───────────────────────────────────────────
 substitutions:
-  _ENV:             "dv"
+  _ENV:             "dv"            # change to prod for PROD
   _REGION:          "us-central1"
   _PROJECT_ID:      "dv-env"
   _REGISTRY:        "us-central1-docker.pkg.dev/dv-env/mb-repo"
   _SA_EMAIL:        "mb-pipeline-sa@dv-env.iam.gserviceaccount.com"
-  _SOURCE_BUCKET:   "dv-mobile-brands"
+  _SOURCE_BUCKET:   "mobile_brands"
   _PIPELINE_BUCKET: "dv-mb-pipeline-bucket"
-  _COMPOSER_BUCKET: "us-central1-dv-mb-composer-XXXXXX-bucket"
+  _COMPOSER_BUCKET: "us-central1-dv-mb-composer-XXXX"
 
 options:
   logging: CLOUD_LOGGING_ONLY
