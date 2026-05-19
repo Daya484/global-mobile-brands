@@ -409,10 +409,23 @@ gs://dv-mb-pipeline-bucket/
 │   ├── bronze.py
 │   ├── silver.py
 │   └── gold.py
-├── bronze/    brand=Samsung/dt=2026-05-19/  *.parquet
-├── silver/    brand=Samsung/dt=2026-05-19/  *.parquet
-└── gold/      dt=2026-05-19/                *.parquet
+├── raw_data/                            ← Bronze layer (Parquet, partitioned by date)
+│   ├── samsung/
+│   │   └── date_reported=2026-05-19/   *.parquet
+│   ├── apple/
+│   │   └── date_reported=2026-05-19/   *.parquet
+│   ├── oppo/
+│   ├── vivo/
+│   └── oneplus/
+└── silver/
+    └── mobile_brands/
+        └── silver_brands_ingest_delta/  ← Silver Delta Lake table (all brands unified)
+            ├── _delta_log/
+            └── date_reported=2026-05-19/  *.parquet
 ```
+
+> 📊 **BigQuery Gold Table**: `{project_id}.mobile_brands.gold_brand_daily_v1`
+> Written directly by `gold.py` via the BigQuery Spark connector (no GCS parquet layer).
 
 ---
 
@@ -425,11 +438,11 @@ transform_csv (Cloud Run: transform)
       ↓
 create_cluster (Dataproc)
       ↓
-bronze (PySpark: transformed CSV → Parquet)
+bronze (PySpark: CSV → raw_data/<brand>/date_reported=<dt>/ Parquet)
       ↓
-silver (PySpark: dedup + clean)
+silver (PySpark: all brands → deduplicated Delta table via MERGE)
       ↓
-gold (PySpark: KPIs → BigQuery)
+gold (PySpark: Delta + BQ dims → nested schema → BigQuery gold_brand_daily_v1)
       ↓
 archive (Cloud Run: move files to archive folders)
       ↓
@@ -444,9 +457,12 @@ delete_cluster (always runs — even if pipeline fails)
 |---|---|---|
 | Excel files not in `landing/` | Cloud Run logs for `mb-ingestion` | Check `BUCKET_NAME` env var; check SA storage permissions |
 | CSVs missing from `transformed/` | Cloud Run logs for `mb-transform` | Verify file naming has `_YYYYMMDD`; check `RUN_DATE` passed |
-| Bronze job reads 0 files | Dataproc job logs | Confirm `--source_bucket` matches where CSVs were written |
-| Silver drops too many rows | Dataproc job logs | Check `DEDUP_KEYS` match actual column names in the data |
-| Gold BigQuery write fails | Dataproc job logs | Confirm SA has `bigquery.dataEditor` + `bigquery.jobUser` roles |
+| Bronze job reads 0 files | Dataproc job logs | Confirm `--source_bucket` matches where CSVs were written; check date format `_YYYYMMDD.csv` |
+| Silver fails with `ClassNotFoundException` | Dataproc job logs | Delta Lake jar not loaded — confirm cluster image is `2.2-debian12` and `spark.jars.packages` is set |
+| Silver MERGE fails (table not found) | Dataproc job logs | Check `mobile_brands` database exists in metastore or let first run create it |
+| Silver drops too many rows | Dataproc job logs | Check `BUSINESS_KEY_COLS` match actual column names in the Bronze data |
+| Gold BQ dims not found | Dataproc job logs | Confirm `dim_date`, `dim_market`, `product_v2`, `customer` tables exist in `{project}.mobile_brands` |
+| Gold BigQuery write fails | Dataproc job logs | Confirm SA has `bigquery.dataEditor` + `bigquery.jobUser` roles; check `temporaryGcsBucket` accessible |
 | Archive moves wrong day's files | Cloud Run logs for `mb-archive` | Confirm `RUN_DATE` is being passed from Airflow `{{ ds }}` |
 | Cluster not deleted after failure | Airflow UI | `delete_cluster` has `trigger_rule=ALL_DONE` — check Airflow logs |
 | Cloud Build fails at docker build | Cloud Build logs | Confirm folder names match: `ingestion/`, `transform/`, `archival/` |
@@ -459,7 +475,9 @@ delete_cluster (always runs — even if pipeline fails)
 | Practice | Where |
 |---|---|
 | Idempotent file naming (`_YYYYMMDD`) | ingestion, transform, archival |
-| Dynamic partition overwrite (safe re-runs) | bronze.py, silver.py, gold.py |
+| Append + partition overwrite (safe bronze re-runs) | bronze.py |
+| Delta MERGE — idempotent incremental load | silver.py |
+| BigQuery overwrite — full refresh gold | gold.py |
 | Thread-safe parallel GCS operations | transform, archival |
 | Ephemeral Dataproc cluster (cost saving) | DAG: create → run → delete |
 | `trigger_rule=ALL_DONE` on cluster delete | Always cleans up even on failure |
@@ -483,4 +501,6 @@ delete_cluster (always runs — even if pipeline fails)
 | Data Bucket | `dv-mb-data-bucket` | `prod-mb-data-bucket` |
 | Pipeline Bucket | `dv-mb-pipeline-bucket` | `prod-mb-pipeline-bucket` |
 | BigQuery Dataset | `dv-env:mobile_brands` | `prod-env:mobile_brands` |
-| BigQuery Table | `gold_mobile_brands` | `gold_mobile_brands` |
+| BigQuery Table | `gold_brand_daily_v1` | `gold_brand_daily_v1` |
+| Dataproc Image | `2.2-debian12` (Spark 3.5) | `2.2-debian12` (Spark 3.5) |
+| Delta Lake version | `delta-spark_2.12:3.2.0` | `delta-spark_2.12:3.2.0` |

@@ -58,9 +58,19 @@ CLUSTER_CONFIG = {
         "preemptibility": "PREEMPTIBLE",
     },
     "software_config": {
-        "image_version": "2.1-debian11",
+        # 2.2-debian12 = Spark 3.5 — required for Delta Lake 3.x compatibility
+        "image_version": "2.2-debian12",
         "properties": {
+            # Delta Lake — loaded at cluster level so all spark-submit jobs pick it up
+            "spark:spark.jars.packages":
+                "io.delta:delta-spark_2.12:3.2.0",
+            "spark:spark.sql.extensions":
+                "io.delta.sql.DeltaSparkSessionExtension",
+            "spark:spark.sql.catalog.spark_catalog":
+                "org.apache.spark.sql.delta.catalog.DeltaCatalog",
+            # Performance
             "spark:spark.sql.adaptive.enabled": "true",
+            "spark:spark.sql.shuffle.partitions": "100",
         },
     },
 }
