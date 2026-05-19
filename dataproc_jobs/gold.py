@@ -29,9 +29,10 @@ def parse_args():
     p.add_argument("--dt",              required=True)
     p.add_argument("--pipeline_bucket", required=True)
     p.add_argument("--project_id",      required=True)
-    p.add_argument("--bq_dataset",      default="mobile_brands")
+    p.add_argument("--dataset",         default="mobile_brands")  # renamed from --bq_dataset
     p.add_argument("--env",             default="dv")
-    return p.parse_args()
+    args, _ = p.parse_known_args()  # ignore extra args passed by the DAG (e.g. --run_id, --source_bucket)
+    return args
 
 
 def get_spark(env: str) -> SparkSession:
@@ -86,7 +87,7 @@ def main():
     log.info("Gold GCS written: %s", gcs_dest)
 
     # ── Write to BigQuery ─────────────────────────────────────────────────────
-    bq_table = f"{args.project_id}:{args.bq_dataset}.gold_mobile_brands"
+    bq_table = f"{args.project_id}:{args.dataset}.gold_mobile_brands"
     (
         gold.write
         .format("bigquery")

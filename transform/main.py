@@ -314,10 +314,10 @@ def main():
     log.info("DONE | input_files=%d | uploaded_csv=%d | errors=%d", total_files, total_uploaded, total_errors)
     log.info("=" * 80)
 
-    # If you want Cloud Run job to fail on any errors (so Airflow stops pipeline),
-    # uncomment below:
-    # if total_errors > 0:
-    #     raise SystemExit(1)
+    # Fail the job if any file had upload errors so Airflow stops the pipeline
+    if total_errors > 0:
+        log.error("Transform completed with %d error(s) — failing job.", total_errors)
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

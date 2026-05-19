@@ -34,6 +34,7 @@ PROJECT_ID = Variable.get("MB_PROJECT_ID", "dv-env")
 REGION     = Variable.get("MB_REGION", "us-central1")
 
 PIPELINE_BUCKET = Variable.get("MB_PIPELINE_BUCKET", "dv-mb-pipeline-bucket")
+SOURCE_BUCKET   = Variable.get("MB_SOURCE_BUCKET",   "dv-mb-data-bucket")   # holds landing/ & transformed/
 BQ_DATASET      = Variable.get("MB_BQ_DATASET", "mobile_brands")
 
 CLUSTER_NAME = f"{ENV}-mb-cluster-{{{{ ds_nodash }}}}"
@@ -77,8 +78,11 @@ def pyspark_job(script):
             "args": [
                 "--dt={{ ds }}",
                 "--run_id={{ run_id }}",
-                f"--bucket={PIPELINE_BUCKET}",
+                f"--pipeline_bucket={PIPELINE_BUCKET}",
+                f"--source_bucket={SOURCE_BUCKET}",   # for bronze: where transformed/ CSVs live
+                f"--project_id={PROJECT_ID}",
                 f"--dataset={BQ_DATASET}",
+                f"--env={ENV}",
             ],
         },
     }
@@ -86,13 +90,15 @@ def pyspark_job(script):
 
 def cloud_run_env():
     """
-    Send minimal required env vars
+    Env vars injected into every Cloud Run job execution.
+    BUCKET_NAME = SOURCE_BUCKET because ingestion/transform/archival all
+    read and write the data bucket (landing/, transformed/, archive_*/).
     """
     return {
         "containerOverrides": [{
             "env": [
-                {"name": "RUN_DATE", "value": "{{ ds }}"},
-                {"name": "BUCKET_NAME", "value": PIPELINE_BUCKET},
+                {"name": "RUN_DATE",    "value": "{{ ds }}"},
+                {"name": "BUCKET_NAME", "value": SOURCE_BUCKET},
             ]
         }]
     }
@@ -205,6 +211,6 @@ with DAG(
     t_generate >> t_transform >> t_cluster
     t_cluster >> t_bronze >> t_silver >> t_gold
 
-    # ✅ parallel handling after GOLD
-    t_gold >> t_archive
-    t_gold >> t_delete
+    # Archive completes first, then cluster is deleted (trigger_rule=ALL_DONE
+    # on t_delete ensures cleanup even if archive fails)
+    t_gold >> t_archive >> t_delete
