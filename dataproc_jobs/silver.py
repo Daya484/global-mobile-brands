@@ -21,8 +21,9 @@ logging.basicConfig(
 )
 log = logging.getLogger("silver")
 
-BRANDS     = ["Samsung", "Apple", "Oppo", "Vivo", "OnePlus"]
-DEDUP_KEYS = ["brand", "dt"]   # extend with domain-specific keys as needed
+BRANDS = ["Samsung", "Apple", "Oppo", "Vivo", "OnePlus"]
+# Granular business keys: one row = one model at one store for one distributor on one day
+DEDUP_KEYS = ["brand", "Distributor_code", "Retailer_code", "Store_code", "Model"]
 
 
 def parse_args():
@@ -31,7 +32,8 @@ def parse_args():
     p.add_argument("--run_id",          required=True)
     p.add_argument("--pipeline_bucket", required=True)
     p.add_argument("--env",             default="dv")
-    return p.parse_args()
+    args, _ = p.parse_known_args()  # ignore extra args passed by the DAG
+    return args
 
 
 def get_spark(env: str) -> SparkSession:

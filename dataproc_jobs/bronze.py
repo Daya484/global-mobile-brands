@@ -36,8 +36,10 @@ def parse_args():
     p.add_argument("--dt",              required=True)
     p.add_argument("--run_id",          required=True)
     p.add_argument("--pipeline_bucket", required=True)
+    p.add_argument("--source_bucket",   required=True)  # bucket holding transformed/ CSVs
     p.add_argument("--env",             default="dv")
-    return p.parse_args()
+    args, _ = p.parse_known_args()  # ignore extra args passed by the DAG
+    return args
 
 
 def get_spark(env: str) -> SparkSession:
@@ -64,7 +66,9 @@ def data_quality_gate(df, brand: str):
 
 
 def process_brand(spark, args, brand: str) -> int:
-    src = f"gs://{args.pipeline_bucket}/transform/dt={args.dt}/run_id={args.run_id}/*/{brand}.csv"
+    # Transform writes: gs://<source_bucket>/transformed/<brand_lower>/<DISTCODE>_YYYYMMDD.csv
+    date_nodash = args.dt.replace("-", "")
+    src = f"gs://{args.source_bucket}/transformed/{brand.lower()}/*_{date_nodash}.csv"
     log.info("Reading: %s", src)
 
     try:

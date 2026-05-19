@@ -11,7 +11,7 @@ steps:
       "build",
       "-t", "${_REGISTRY}/mb-ingestion:$SHORT_SHA",
       "-t", "${_REGISTRY}/mb-ingestion:latest",
-      "./01-ingestion"
+      "./ingestion"
     ]
 
 - name: gcr.io/cloud-builders/docker
@@ -27,7 +27,7 @@ steps:
       "build",
       "-t", "${_REGISTRY}/mb-transform:$SHORT_SHA",
       "-t", "${_REGISTRY}/mb-transform:latest",
-      "./02-transform"
+      "./transform"
     ]
 
 - name: gcr.io/cloud-builders/docker
@@ -43,7 +43,7 @@ steps:
       "build",
       "-t", "${_REGISTRY}/mb-archival:$SHORT_SHA",
       "-t", "${_REGISTRY}/mb-archival:latest",
-      "./03-archival"
+      "./archival"
     ]
 
 - name: gcr.io/cloud-builders/docker
@@ -113,7 +113,7 @@ steps:
   args:
     [
       "storage","cp",
-      "04-dataproc_jobs/",
+      "dataproc_jobs/",
       "gs://${_PIPELINE_BUCKET}/scripts/",
       "--recursive"
     ]
@@ -128,7 +128,7 @@ steps:
   args:
     [
       "storage","cp",
-      "05-airflow/",
+      "airflow/",
       "gs://${_COMPOSER_BUCKET}/dags/",
       "--recursive"
     ]
@@ -143,9 +143,9 @@ substitutions:
   _PROJECT_ID:      "dv-env"
   _REGISTRY:        "us-central1-docker.pkg.dev/dv-env/mb-repo"
   _SA_EMAIL:        "mb-pipeline-sa@dv-env.iam.gserviceaccount.com"
-  _SOURCE_BUCKET:   "mobile_brands"
-  _PIPELINE_BUCKET: "dv-mb-pipeline-bucket"
-  _COMPOSER_BUCKET: "us-central1-dv-mb-composer-XXXX"
+  _SOURCE_BUCKET:   "dv-mb-data-bucket"      # bucket holding landing/ & transformed/ — update to real name
+  _PIPELINE_BUCKET: "dv-mb-pipeline-bucket"  # bucket holding scripts/, bronze/, silver/, gold/
+  _COMPOSER_BUCKET: "us-central1-dv-mb-composer-XXXX" # update to your real Composer bucket
 
 options:
   logging: CLOUD_LOGGING_ONLY

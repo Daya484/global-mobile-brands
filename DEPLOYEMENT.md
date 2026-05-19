@@ -1,192 +1,486 @@
-You want a complete README.md that explains deployment for:
-✅ DV + PROD environments
-✅ 3 Cloud Run jobs (Generator, Transformer, Archive)
-✅ Dataproc (Bronze, Silver, Gold)
-✅ Airflow DAG (Composer)
+# 📊 Mobile Brands End-to-End Data Pipeline — Deployment Guide
 
-✅ ✅ ✅ FINAL README.md (Production Ready)
-👉 You can copy this directly into your repo
-
-# 📊 Mobile Brands End-to-End Data Pipeline (GCP)
-
-## ✅ Overview
-
-This project implements a full **data pipeline on GCP**:
-
-Cloud Run (Generator)
-↓
-Cloud Run (Transform)
-↓
-Dataproc (Bronze → Silver → Gold)
-↓
-Cloud Run (Archive)
-↓
-BigQuery (Final Output)
+> **Who is this for?** Any engineer who needs to deploy this pipeline from scratch on GCP.
+> Follow the steps top-to-bottom. Every command includes a comment explaining what it does.
 
 ---
 
-# ✅ Environments Supported
+## 🗺️ Pipeline Overview
 
-| Environment | Project ID | Bucket |
-|-------------|-----------|--------|
-| DEV (DV)    | dv-env    | mobile_brands |
-| PROD        | prod-env  | mobile_brands |
+```
+Cloud Run: Ingestion  →  Cloud Run: Transform  →  Dataproc: Bronze → Silver → Gold  →  Cloud Run: Archival  →  BigQuery
+```
 
-👉 Buckets have same name but exist in different projects.
-
----
-
-# ✅ GCS Bucket Structure
-
-mobile_brands/
-landing/
-AUSTRALIA/
-INDIA/
-transformed/
-apple/
-samsung/
-archive_landing/
-YYYY-MM-DD/
-AUSTRALIA/
-archive_transformed/
-YYYY-MM-DD/
-apple/
+Orchestrated by **Cloud Composer (Airflow)** — runs daily at 01:00 UTC.
 
 ---
 
-# ✅ Step 1: Deploy Cloud Run Jobs
+## 📁 Repo Structure
 
-## ✅ 1. Generator Job (Excel creation)
+```
+global-mobile-brands/
+├── ingestion/          # Cloud Run Job — generates Excel files → GCS landing/
+│   ├── main.py
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   └── config/config.json
+├── transform/          # Cloud Run Job — Excel → CSV per brand → GCS transformed/
+│   ├── main.py
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   └── config/config.json
+├── archival/           # Cloud Run Job — moves files to archive_landing/ & archive_transformed/
+│   ├── main.py
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   └── config/config.json
+├── dataproc_jobs/      # PySpark jobs uploaded to GCS and run by Dataproc
+│   ├── bronze.py
+│   ├── silver.py
+│   └── gold.py
+├── airflow/            # Airflow DAG synced to Cloud Composer
+│   └── dag_end_to_end_pipeline.py
+└── cloudbuild.yaml     # CI/CD — builds images, deploys jobs, syncs scripts & DAG
+```
 
-### Build Image
+---
+
+## ⚙️ Environment Variables Reference
+
+| Variable | DV Value | PROD Value |
+|---|---|---|
+| `ENV` | `dv` | `prod` |
+| `PROJECT_ID` | `dv-env` | `prod-env` |
+| `REGION` | `us-central1` | `us-central1` |
+| `SOURCE_BUCKET` | `dv-mb-data-bucket` | `prod-mb-data-bucket` |
+| `PIPELINE_BUCKET` | `dv-mb-pipeline-bucket` | `prod-mb-pipeline-bucket` |
+| `REGISTRY` | `us-central1-docker.pkg.dev/dv-env/mb-repo` | `us-central1-docker.pkg.dev/prod-env/mb-repo` |
+| `SA_EMAIL` | `mb-pipeline-sa@dv-env.iam.gserviceaccount.com` | `mb-pipeline-sa@prod-env.iam.gserviceaccount.com` |
+
+> 💡 Run all Cloud Shell commands from the **repo root** (`global-mobile-brands/`).
+
+---
+
+## 🔧 STEP 0 — One-time GCP Setup
+
+Run these once per project (DV or PROD). Replace `PROJECT_ID` with your actual project.
 
 ```bash
-gcloud builds submit --tag gcr.io/<PROJECT_ID>/generator
+# ── Set your project ──────────────────────────────────────────────────────────
+export PROJECT_ID="dv-env"           # change to prod-env for PROD
+export ENV="dv"                      # change to prod for PROD
+export REGION="us-central1"
+export SOURCE_BUCKET="dv-mb-data-bucket"
+export PIPELINE_BUCKET="dv-mb-pipeline-bucket"
+export SA_EMAIL="mb-pipeline-sa@${PROJECT_ID}.iam.gserviceaccount.com"
+export REGISTRY="${REGION}-docker.pkg.dev/${PROJECT_ID}/mb-repo"
 
-Create Job
-Shellgcloud run jobs create <env>-generator \  --image gcr.io/<PROJECT_ID>/generator \  --region us-central1
+# Set the active project
+gcloud config set project $PROJECT_ID
 
-✅ 2. Transform Job (Excel → CSV)
-Shellgcloud builds submit --tag gcr.io/<PROJECT_ID>/transformgcloud run jobs create <env>-transform \  --image gcr.io/<PROJECT_ID>/transform \  --region us-central1
+# ── Enable required APIs ──────────────────────────────────────────────────────
+gcloud services enable \
+  run.googleapis.com \
+  dataproc.googleapis.com \
+  composer.googleapis.com \
+  artifactregistry.googleapis.com \
+  cloudbuild.googleapis.com \
+  bigquery.googleapis.com \
+  storage.googleapis.com
 
-✅ 3. Archive Job
-Shellgcloud builds submit --tag gcr.io/<PROJECT_ID>/archivegcloud run jobs create <env>-archive \  --image gcr.io/<PROJECT_ID>/archive \  --region us-central1
+# ── Create Artifact Registry repository for Docker images ─────────────────────
+gcloud artifacts repositories create mb-repo \
+  --repository-format=docker \
+  --location=$REGION \
+  --description="Mobile Brands pipeline images"
 
-✅ Naming Convention 
+# ── Create service account ────────────────────────────────────────────────────
+gcloud iam service-accounts create mb-pipeline-sa \
+  --display-name="Mobile Brands Pipeline SA"
 
-ENV     Jobs  
-DV      dv-generator, dv-transform, dv-archive 
-PROD    prod-generator, prod-transform, prod-archive
+# ── Grant required roles to the service account ───────────────────────────────
+for ROLE in \
+  roles/storage.objectAdmin \
+  roles/dataproc.editor \
+  roles/bigquery.dataEditor \
+  roles/bigquery.jobUser \
+  roles/run.invoker \
+  roles/logging.logWriter; do
+  gcloud projects add-iam-policy-binding $PROJECT_ID \
+    --member="serviceAccount:$SA_EMAIL" \
+    --role="$ROLE"
+done
 
-✅ Step 2: Upload Dataproc Scripts
-Upload PySpark jobs to GCS:
-Shellgs://dv-mb-pipeline-bucket/scripts/    bronze.py    silver.py    gold.py
+# ── Create GCS buckets ────────────────────────────────────────────────────────
+# Data bucket: holds landing/, transformed/, archive_landing/, archive_transformed/
+gcloud storage buckets create gs://$SOURCE_BUCKET \
+  --location=$REGION \
+  --uniform-bucket-level-access
 
-✅ Step 3: Dataproc Cluster Setup (Airflow handles this)
-Cluster will be created dynamically using:
+# Pipeline bucket: holds scripts/ (PySpark), bronze/, silver/, gold/ (Parquet)
+gcloud storage buckets create gs://$PIPELINE_BUCKET \
+  --location=$REGION \
+  --uniform-bucket-level-access
 
-n1-standard-4
-2 workers
-preemptible nodes ✅ (cost saving)
-auto delete ✅
+# ── Create BigQuery dataset ───────────────────────────────────────────────────
+bq --location=$REGION mk \
+  --dataset \
+  --description="Mobile Brands gold layer" \
+  ${PROJECT_ID}:mobile_brands
+```
 
+---
 
-✅ Step 4: Deploy Airflow (Cloud Composer)
-✅ Create Composer Environment
-Shellgcloud composer environments create mb-composer \  --location us-central1 \  --zone us-central1-a
+## 🐳 STEP 1 — Build & Push Docker Images
 
-✅ Upload DAG
-Shellgsutil cp dag_mb_pipeline.py \gs://<COMPOSER_BUCKET>/dags/
+Each Cloud Run job has its own Dockerfile. Build and push all three.
 
-✅ Step 5: Airflow Variables Setup
-Set variables in Airflow UI:
-✅ DEV
-MB_ENV = dv
-MB_PROJECT_ID = dv-env
-MB_BUCKET = mobile_brands
+```bash
+# ── Configure Docker to use Artifact Registry ─────────────────────────────────
+gcloud auth configure-docker ${REGION}-docker.pkg.dev
 
-✅ PROD
-MB_ENV = prod
-MB_PROJECT_ID = prod-env
-MB_BUCKET = mobile_brands
+# ── Build & push: Ingestion (generates Excel files) ──────────────────────────
+docker build -t ${REGISTRY}/mb-ingestion:latest ./ingestion
+docker push ${REGISTRY}/mb-ingestion:latest
 
+# ── Build & push: Transform (Excel → CSV per brand) ───────────────────────────
+docker build -t ${REGISTRY}/mb-transform:latest ./transform
+docker push ${REGISTRY}/mb-transform:latest
 
-✅ Step 6: Airflow DAG Execution Flow
-generate_excel (Cloud Run)
-        ↓
-transform_csv (Cloud Run)
-        ↓
-create_dataproc_cluster
-        ↓
-bronze → silver → gold
-        ↓
-archive (Cloud Run)
-        ↓
-delete_cluster (always)
+# ── Build & push: Archival (moves files to archive folders) ──────────────────
+docker build -t ${REGISTRY}/mb-archival:latest ./archival
+docker push ${REGISTRY}/mb-archival:latest
+```
 
+---
 
-✅ Step 7: Trigger DAG
-Manual Run
-Airflow UI → Trigger DAG
+## ☁️ STEP 2 — Deploy Cloud Run Jobs
 
-Scheduled Run
-0 1 * * *
+Create (or update) the three Cloud Run Jobs. The `--set-env-vars` sets default env vars; Airflow overrides `RUN_DATE` at execution time.
 
-(Runs daily)
+### 2a. Ingestion Job
 
-✅ Step 8: Airflow Cloud Run ENV
-All jobs receive:
-RUN_DATE={{ ds }}
-BUCKET_NAME={{ var.value.MB_BUCKET }}
-PROJECT_ID={{ var.value.MB_PROJECT_ID }}
+```bash
+# Create the ingestion Cloud Run Job
+# This job generates Excel distributor files and uploads them to GCS landing/
+gcloud run jobs deploy ${ENV}-mb-ingestion \
+  --image=${REGISTRY}/mb-ingestion:latest \
+  --region=$REGION \
+  --project=$PROJECT_ID \
+  --service-account=$SA_EMAIL \
+  --set-env-vars="BUCKET_NAME=${SOURCE_BUCKET},PROJECT_ID=${PROJECT_ID}" \
+  --memory=1Gi \
+  --cpu=1 \
+  --max-retries=3 \
+  --tasks=1
+```
 
+### 2b. Transform Job
 
-✅ Step 9: DV vs PROD Execution
-DV
-Project → dv-env
-Job → dv-generator
-Bucket → mobile_brands (DV)
+```bash
+# Create the transform Cloud Run Job
+# Reads Excel from landing/, splits by brand sheet, writes CSV to transformed/
+gcloud run jobs deploy ${ENV}-mb-transform \
+  --image=${REGISTRY}/mb-transform:latest \
+  --region=$REGION \
+  --project=$PROJECT_ID \
+  --service-account=$SA_EMAIL \
+  --set-env-vars="BUCKET_NAME=${SOURCE_BUCKET},PROJECT_ID=${PROJECT_ID}" \
+  --memory=2Gi \
+  --cpu=2 \
+  --max-retries=3 \
+  --tasks=1
+```
 
+### 2c. Archival Job
 
-PROD
-Project → prod-env
-Job → prod-generator
-Bucket → mobile_brands (PROD)
+```bash
+# Create the archival Cloud Run Job
+# Moves processed files from landing/ & transformed/ into dated archive folders
+gcloud run jobs deploy ${ENV}-mb-archive \
+  --image=${REGISTRY}/mb-archival:latest \
+  --region=$REGION \
+  --project=$PROJECT_ID \
+  --service-account=$SA_EMAIL \
+  --set-env-vars="BUCKET_NAME=${SOURCE_BUCKET},PROJECT_ID=${PROJECT_ID}" \
+  --memory=512Mi \
+  --cpu=1 \
+  --max-retries=3 \
+  --tasks=1
+```
 
+### Verify all 3 jobs exist
 
-✅ Step 10: Final Outputs
-✅ Landing
-landing/AUSTRALIA/AUSDST01_20260509.xlsx
+```bash
+# List all Cloud Run jobs in the project — you should see all 3
+gcloud run jobs list --region=$REGION --project=$PROJECT_ID
+```
 
-✅ Transformed
-transformed/apple/AUSDST01_20260509.csv
+---
 
-✅ Archived
-archive_landing/2026-05-09/AUSTRALIA/...
-archive_transformed/2026-05-09/apple/...
+## ⚡ STEP 3 — Upload Dataproc PySpark Scripts to GCS
 
+The Dataproc cluster runs bronze.py, silver.py, gold.py from GCS. Upload them here.
 
-✅ Best Practices Used ✅
-✅ Idempotent file naming
-✅ Partition-based processing (date-driven)
-✅ Environment-based job separation
-✅ Ephemeral Dataproc cluster (cost-saving)
-✅ Parallel processing
-✅ Safe archive (copy + delete)
-✅ Airflow retry + failure handling
+```bash
+# Create the scripts/ folder in the pipeline bucket and upload all PySpark scripts
+gcloud storage cp dataproc_jobs/bronze.py gs://${PIPELINE_BUCKET}/scripts/bronze.py
+gcloud storage cp dataproc_jobs/silver.py gs://${PIPELINE_BUCKET}/scripts/silver.py
+gcloud storage cp dataproc_jobs/gold.py   gs://${PIPELINE_BUCKET}/scripts/gold.py
 
-✅ Troubleshooting
+# Verify the scripts are uploaded
+gcloud storage ls gs://${PIPELINE_BUCKET}/scripts/
+```
 
-Issue                         Fix
-Files not generated           Check generator Cloud Run logs
-Transform missing             Check file naming (_YYYYMMDD)
-Archive not moving            Ensure RUN_DATE passed
-Dataproc failure              Check Spark logs
-Bucket mismatch               Verify Airflow variables
+---
 
-✅ Future Enhancements
-✅ Data quality validation in DAG
-✅ Alerts (Email / Teams)
-✅ Metadata tracking
-✅ Audit tables in BigQuery
-✅ CI/CD using Cloud Build
+## 🎵 STEP 4 — Deploy Airflow DAG to Cloud Composer
+
+### 4a. Create Composer Environment (first time only)
+
+```bash
+# Create a Cloud Composer 2 environment — takes ~20-30 minutes
+# Adjust --machine-type / --image-version as needed
+gcloud composer environments create mb-composer \
+  --location=$REGION \
+  --image-version=composer-2.6.6-airflow-2.7.3 \
+  --environment-size=small \
+  --service-account=$SA_EMAIL
+
+# Get the Composer GCS bucket name (you'll need this for the next steps)
+export COMPOSER_BUCKET=$(gcloud composer environments describe mb-composer \
+  --location=$REGION \
+  --format="value(config.dagGcsPrefix)" | sed 's|gs://||' | cut -d'/' -f1)
+
+echo "Composer bucket: $COMPOSER_BUCKET"
+```
+
+### 4b. Upload the DAG
+
+```bash
+# Copy the DAG file to the Composer dags/ folder
+# Composer automatically picks up new DAG files within 1-2 minutes
+gcloud storage cp airflow/dag_end_to_end_pipeline.py \
+  gs://${COMPOSER_BUCKET}/dags/dag_end_to_end_pipeline.py
+
+# Verify it was uploaded
+gcloud storage ls gs://${COMPOSER_BUCKET}/dags/
+```
+
+### 4c. Set Airflow Variables
+
+These variables are read by the DAG at runtime. Set them in the Composer environment.
+
+```bash
+# ── DV Environment variables ──────────────────────────────────────────────────
+gcloud composer environments run mb-composer \
+  --location=$REGION \
+  variables -- set MB_ENV dv
+
+gcloud composer environments run mb-composer \
+  --location=$REGION \
+  variables -- set MB_PROJECT_ID dv-env
+
+gcloud composer environments run mb-composer \
+  --location=$REGION \
+  variables -- set MB_REGION us-central1
+
+gcloud composer environments run mb-composer \
+  --location=$REGION \
+  variables -- set MB_SOURCE_BUCKET dv-mb-data-bucket
+
+gcloud composer environments run mb-composer \
+  --location=$REGION \
+  variables -- set MB_PIPELINE_BUCKET dv-mb-pipeline-bucket
+
+gcloud composer environments run mb-composer \
+  --location=$REGION \
+  variables -- set MB_BQ_DATASET mobile_brands
+```
+
+> For **PROD**: repeat the above replacing `dv` values with `prod` values in the PROD Composer environment.
+
+### 4d. Verify Variables
+
+```bash
+# List all Airflow variables to confirm they were set correctly
+gcloud composer environments run mb-composer \
+  --location=$REGION \
+  variables -- list
+```
+
+---
+
+## 🚀 STEP 5 — Trigger the Pipeline
+
+### Manual trigger (testing)
+
+```bash
+# Trigger the DAG manually for a specific date (useful for backfill or testing)
+gcloud composer environments run mb-composer \
+  --location=$REGION \
+  dags trigger -- dv_mobile_brands_pipeline \
+  --conf '{"run_date": "2026-05-19"}'
+```
+
+### Scheduled run
+
+The DAG runs automatically on schedule: **`0 1 * * *`** (daily at 01:00 UTC).
+No action needed — Composer handles it once the DAG is deployed.
+
+### Monitor in Airflow UI
+
+```bash
+# Get the Airflow web UI URL
+gcloud composer environments describe mb-composer \
+  --location=$REGION \
+  --format="value(config.airflowUri)"
+```
+
+Open the URL → find `dv_mobile_brands_pipeline` → monitor task status.
+
+---
+
+## 🔄 STEP 6 — CI/CD via Cloud Build (automated deployments)
+
+After the first manual setup, use Cloud Build for all future deployments.
+
+```bash
+# Submit a build manually (replaces Steps 1–3 above in one command)
+# This builds all 3 images, deploys the Cloud Run jobs, and syncs scripts + DAG
+gcloud builds submit \
+  --config=cloudbuild.yaml \
+  --substitutions=\
+_ENV=dv,\
+_PROJECT_ID=dv-env,\
+_REGION=us-central1,\
+_REGISTRY=us-central1-docker.pkg.dev/dv-env/mb-repo,\
+_SA_EMAIL=mb-pipeline-sa@dv-env.iam.gserviceaccount.com,\
+_SOURCE_BUCKET=dv-mb-data-bucket,\
+_PIPELINE_BUCKET=dv-mb-pipeline-bucket,\
+_COMPOSER_BUCKET=<YOUR_COMPOSER_BUCKET_NAME>
+
+# For PROD, repeat with prod values:
+gcloud builds submit \
+  --config=cloudbuild.yaml \
+  --substitutions=\
+_ENV=prod,\
+_PROJECT_ID=prod-env,\
+_REGION=us-central1,\
+_REGISTRY=us-central1-docker.pkg.dev/prod-env/mb-repo,\
+_SA_EMAIL=mb-pipeline-sa@prod-env.iam.gserviceaccount.com,\
+_SOURCE_BUCKET=prod-mb-data-bucket,\
+_PIPELINE_BUCKET=prod-mb-pipeline-bucket,\
+_COMPOSER_BUCKET=<YOUR_PROD_COMPOSER_BUCKET_NAME>
+```
+
+> 💡 To set up **automatic triggers** (on git push to a branch), configure a Cloud Build trigger in the GCP Console → Cloud Build → Triggers, pointing to this repo and `cloudbuild.yaml`.
+
+---
+
+## 🔁 GCS Folder Structure (Expected After Pipeline Run)
+
+```
+gs://dv-mb-data-bucket/
+├── landing/
+│   ├── INDIA/          INDDST01_20260519.xlsx  ...
+│   ├── AUSTRALIA/      AUSDST01_20260519.xlsx  ...
+│   ├── CHINA/
+│   ├── AMERICA/
+│   ├── SOUTH KOREA/
+│   └── SOUTH AFRICA/
+├── transformed/
+│   ├── samsung/        INDDST01_20260519.csv   ...
+│   ├── apple/
+│   ├── oppo/
+│   ├── vivo/
+│   └── oneplus/
+├── archive_landing/
+│   └── 2026-05-19/
+│       ├── INDIA/
+│       └── AUSTRALIA/  ...
+└── archive_transformed/
+    └── 2026-05-19/
+        ├── samsung/
+        └── apple/      ...
+
+gs://dv-mb-pipeline-bucket/
+├── scripts/
+│   ├── bronze.py
+│   ├── silver.py
+│   └── gold.py
+├── bronze/    brand=Samsung/dt=2026-05-19/  *.parquet
+├── silver/    brand=Samsung/dt=2026-05-19/  *.parquet
+└── gold/      dt=2026-05-19/                *.parquet
+```
+
+---
+
+## 📋 Airflow DAG Execution Flow
+
+```
+generate_excel (Cloud Run: ingestion)
+      ↓
+transform_csv (Cloud Run: transform)
+      ↓
+create_cluster (Dataproc)
+      ↓
+bronze (PySpark: transformed CSV → Parquet)
+      ↓
+silver (PySpark: dedup + clean)
+      ↓
+gold (PySpark: KPIs → BigQuery)
+      ↓
+archive (Cloud Run: move files to archive folders)
+      ↓
+delete_cluster (always runs — even if pipeline fails)
+```
+
+---
+
+## 🔍 Troubleshooting
+
+| Symptom | Where to look | Fix |
+|---|---|---|
+| Excel files not in `landing/` | Cloud Run logs for `mb-ingestion` | Check `BUCKET_NAME` env var; check SA storage permissions |
+| CSVs missing from `transformed/` | Cloud Run logs for `mb-transform` | Verify file naming has `_YYYYMMDD`; check `RUN_DATE` passed |
+| Bronze job reads 0 files | Dataproc job logs | Confirm `--source_bucket` matches where CSVs were written |
+| Silver drops too many rows | Dataproc job logs | Check `DEDUP_KEYS` match actual column names in the data |
+| Gold BigQuery write fails | Dataproc job logs | Confirm SA has `bigquery.dataEditor` + `bigquery.jobUser` roles |
+| Archive moves wrong day's files | Cloud Run logs for `mb-archive` | Confirm `RUN_DATE` is being passed from Airflow `{{ ds }}` |
+| Cluster not deleted after failure | Airflow UI | `delete_cluster` has `trigger_rule=ALL_DONE` — check Airflow logs |
+| Cloud Build fails at docker build | Cloud Build logs | Confirm folder names match: `ingestion/`, `transform/`, `archival/` |
+| DAG not appearing in Airflow | Composer logs | Check DAG was uploaded to correct `gs://<COMPOSER_BUCKET>/dags/` path |
+
+---
+
+## ✅ Best Practices Implemented
+
+| Practice | Where |
+|---|---|
+| Idempotent file naming (`_YYYYMMDD`) | ingestion, transform, archival |
+| Dynamic partition overwrite (safe re-runs) | bronze.py, silver.py, gold.py |
+| Thread-safe parallel GCS operations | transform, archival |
+| Ephemeral Dataproc cluster (cost saving) | DAG: create → run → delete |
+| `trigger_rule=ALL_DONE` on cluster delete | Always cleans up even on failure |
+| `max_active_runs=1` on DAG | No overlapping pipeline runs |
+| `skip_if_exists` idempotency in transform | Safe to re-trigger without double-processing |
+| `parse_known_args` in all Spark scripts | Scripts are resilient to extra DAG args |
+| Non-zero exit on errors | Cloud Run jobs fail loudly so Airflow stops |
+| Config/code separation | JSON configs per service — no hardcoded values |
+
+---
+
+## 🌐 Environment Summary
+
+| Component | DV Job/Resource | PROD Job/Resource |
+|---|---|---|
+| Ingestion CR Job | `dv-mb-ingestion` | `prod-mb-ingestion` |
+| Transform CR Job | `dv-mb-transform` | `prod-mb-transform` |
+| Archive CR Job | `dv-mb-archive` | `prod-mb-archive` |
+| Dataproc Cluster | `dv-mb-cluster-<date>` | `prod-mb-cluster-<date>` |
+| Airflow DAG ID | `dv_mobile_brands_pipeline` | `prod_mobile_brands_pipeline` |
+| Data Bucket | `dv-mb-data-bucket` | `prod-mb-data-bucket` |
+| Pipeline Bucket | `dv-mb-pipeline-bucket` | `prod-mb-pipeline-bucket` |
+| BigQuery Dataset | `dv-env:mobile_brands` | `prod-env:mobile_brands` |
+| BigQuery Table | `gold_mobile_brands` | `gold_mobile_brands` |
