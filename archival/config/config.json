@@ -1,9 +1,7 @@
 {
-  "project_name": "dv-env",
-  "bucket_name": "mobile_brands",
+  "bucket_base": "mobile_brands",
 
-  "landing_prefix": "landing",
-  "transformed_root": "transformed",
+  "transformed_root": "transformed",  "landing_prefix": "landing",
 
   "archive_landing_root": "archive_landing",
   "archive_transformed_root": "archive_transformed",
