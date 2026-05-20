@@ -191,7 +191,13 @@ def main():
     today = run_date.replace("-", "") if run_date else date.today().strftime("%Y%m%d")
 
     # Basic config
-    bucket_name = os.getenv("BUCKET_NAME", cfg["bucket_name"])
+    env = os.getenv("ENV", "dv")
+
+    # ✅ Your project naming standard
+    project_name = f"{env}-env"
+
+    # ✅ Bucket name from config
+    bucket_name = os.getenv("BUCKET_NAME",f"{cfg['bucket_base']}_{env}")
     landing_folder = os.getenv("LANDING_FOLDER", cfg["landing_folder"])
     tmp_dir = cfg.get("tmp_dir", "/tmp/distributor_files")
     os.makedirs(tmp_dir, exist_ok=True)

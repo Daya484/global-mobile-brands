@@ -1,7 +1,5 @@
 {
-  "project_name": "dv-env",
-
-  "bucket_name": "mobile_brands",
+  "bucket_base": "mobile_brands",
   "landing_folder": "landing",
   "tmp_dir": "/tmp/distributor_files",
 
