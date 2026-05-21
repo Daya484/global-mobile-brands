@@ -1,28 +1,47 @@
 """
-airflow/dag_mb_pipeline.py
+✅ Mobile Brands Pipeline (Serverless + Email Alerts)
+
 --------------------------------------------------
-Pipeline:
+FLOW:
 
-1. Generator (Cloud Run)
-2. Transformer (Cloud Run)
-3. Dataproc Bronze → Silver → Gold
-4. Archival (Cloud Run)
-5. Delete cluster (always)
+START
+ ↓
+Cloud Run → Generator
+ ↓
+Cloud Run → Transform
+ ↓
+Dataproc Serverless → Bronze
+ ↓
+Dataproc Serverless → Silver
+ ↓
+Dataproc Serverless → Gold
+ ↓
+Cloud Run → Archive
+ ↓
+✅ SUCCESS EMAIL
+ ↓
+END
 
-✅ Optimized & corrected version
+✅ FAILURE EMAIL (automatic)
+--------------------------------------------------
 """
 
 from datetime import datetime, timedelta
 
 from airflow import DAG
 from airflow.models import Variable
-from airflow.providers.google.cloud.operators.dataproc import (
-    DataprocCreateClusterOperator,
-    DataprocDeleteClusterOperator,
-    DataprocSubmitJobOperator,
-)
+from airflow.operators.empty import EmptyOperator
+from airflow.operators.email import EmailOperator
+from airflow.providers.google.cloud.operators.dataproc import DataprocCreateBatchOperator
 from airflow.providers.google.cloud.operators.cloud_run import CloudRunExecuteJobOperator
+from airflow.utils.logging_mixin import LoggingMixin
 from airflow.utils.trigger_rule import TriggerRule
+
+
+# -----------------------------------------------------------------------------
+# LOGGER
+# -----------------------------------------------------------------------------
+log = LoggingMixin().log
 
 
 # -----------------------------------------------------------------------------
@@ -30,49 +49,51 @@ from airflow.utils.trigger_rule import TriggerRule
 # -----------------------------------------------------------------------------
 
 ENV        = Variable.get("MB_ENV", "dv")
-PROJECT_ID = Variable.get("MB_PROJECT_ID", "dv-env")
+PROJECT_ID = Variable.get("MB_PROJECT_ID", "dev-env-496908")
 REGION     = Variable.get("MB_REGION", "us-central1")
 
-PIPELINE_BUCKET = Variable.get("MB_PIPELINE_BUCKET", "dv-mb-pipeline-bucket")
-SOURCE_BUCKET   = Variable.get("MB_SOURCE_BUCKET",   "dv-mb-data-bucket")   # holds landing/ & transformed/
+PIPELINE_BUCKET = Variable.get("MB_PIPELINE_BUCKET", "mb-pipeline-dev-496908")
+SOURCE_BUCKET   = Variable.get("MB_SOURCE_BUCKET", "mb-data-dev-496908")
 BQ_DATASET      = Variable.get("MB_BQ_DATASET", "mobile_brands")
 
-CLUSTER_NAME = f"{ENV}-mb-cluster-{{{{ ds_nodash }}}}"
-SCRIPTS_URI  = f"gs://{PIPELINE_BUCKET}/scripts"
+SCRIPTS_URI = f"gs://{PIPELINE_BUCKET}/scripts"
+
+EMAIL = "dayasagarreddy2943@gmail.com"   # ✅ YOUR EMAIL
+
 
 # -----------------------------------------------------------------------------
-# DATAPROC CONFIG
+# FAILURE EMAIL CALLBACK
 # -----------------------------------------------------------------------------
 
-CLUSTER_CONFIG = {
-    "master_config": {
-        "num_instances": 1,
-        "machine_type_uri": "n1-standard-4",
-    },
-    "worker_config": {
-        "num_instances": 2,
-        "machine_type_uri": "n1-standard-4",
-    },
-    "secondary_worker_config": {
-        "num_instances": 2,
-        "preemptibility": "PREEMPTIBLE",
-    },
-    "software_config": {
-        # 2.2-debian12 = Spark 3.5 — required for Delta Lake 3.x compatibility
-        "image_version": "2.2-debian12",
-        "properties": {
-            # Delta Lake — loaded at cluster level so all spark-submit jobs pick it up
-            "spark:spark.jars.packages":
-                "io.delta:delta-spark_2.12:3.2.0",
-            "spark:spark.sql.extensions":
-                "io.delta.sql.DeltaSparkSessionExtension",
-            "spark:spark.sql.catalog.spark_catalog":
-                "org.apache.spark.sql.delta.catalog.DeltaCatalog",
-            # Performance
-            "spark:spark.sql.adaptive.enabled": "true",
-            "spark:spark.sql.shuffle.partitions": "100",
-        },
-    },
+def send_failure_email(context):
+    """
+    ✅ Sends email when any task fails
+    """
+    log.error("Task failed! Sending email alert...")
+
+    EmailOperator(
+        task_id="send_failure_email",
+        to=[EMAIL],
+        subject=f"🚨 Airflow FAILURE: {context['task_instance'].task_id}",
+        html_content=f"""
+        <h3>🚨 Task Failed</h3>
+        <b>DAG:</b> {context['dag'].dag_id}<br>
+        <b>Task:</b> {context['task_instance'].task_id}<br>
+        <b>Execution Date:</b> {context['execution_date']}<br>
+        <b><a href="{context['task_instance'].log_url}">View Logs</a></b>
+        """,
+    ).execute(context=context)
+
+
+# -----------------------------------------------------------------------------
+# DEFAULT ARGS
+# -----------------------------------------------------------------------------
+
+default_args = {
+    "owner": "data-engineering",
+    "retries": 0,   # ✅ default no retry
+    "retry_delay": timedelta(minutes=5),
+    "on_failure_callback": send_failure_email,  # ✅ EMAIL ALERT
 }
 
 
@@ -80,37 +101,41 @@ CLUSTER_CONFIG = {
 # HELPERS
 # -----------------------------------------------------------------------------
 
-def pyspark_job(script):
+def cloud_run_env():
+    log.info("Setting Cloud Run environment variables")
+
     return {
-        "placement": {"cluster_name": CLUSTER_NAME},
-        "pyspark_job": {
+        "containerOverrides": [{
+            "env": [
+                {"name": "RUN_DATE", "value": "{{ ds }}"},
+                {"name": "BUCKET_NAME", "value": SOURCE_BUCKET},
+                {"name": "ENV", "value": ENV},
+            ]
+        }]
+    }
+
+
+def dataproc_batch(script):
+    log.info(f"Preparing Dataproc batch for {script}")
+
+    return {
+        "pyspark_batch": {
             "main_python_file_uri": f"{SCRIPTS_URI}/{script}",
             "args": [
                 "--dt={{ ds }}",
                 "--run_id={{ run_id }}",
                 f"--pipeline_bucket={PIPELINE_BUCKET}",
-                f"--source_bucket={SOURCE_BUCKET}",   # for bronze: where transformed/ CSVs live
+                f"--source_bucket={SOURCE_BUCKET}",
                 f"--project_id={PROJECT_ID}",
                 f"--dataset={BQ_DATASET}",
                 f"--env={ENV}",
             ],
         },
-    }
-
-
-def cloud_run_env():
-    """
-    Env vars injected into every Cloud Run job execution.
-    BUCKET_NAME = SOURCE_BUCKET because ingestion/transform/archival all
-    read and write the data bucket (landing/, transformed/, archive_*/).
-    """
-    return {
-        "containerOverrides": [{
-            "env": [
-                {"name": "RUN_DATE",    "value": "{{ ds }}"},
-                {"name": "BUCKET_NAME", "value": SOURCE_BUCKET},
-            ]
-        }]
+        "environment_config": {
+            "execution_config": {
+                "service_account": f"{PROJECT_ID}-compute@developer.gserviceaccount.com"
+            }
+        }
     }
 
 
@@ -118,83 +143,67 @@ def cloud_run_env():
 # DAG
 # -----------------------------------------------------------------------------
 
-default_args = {
-    "owner": "data-engineering",
-    "retries": 2,
-    "retry_delay": timedelta(minutes=5),
-}
-
 with DAG(
-    dag_id=f"{ENV}_mobile_brands_pipeline",
+    dag_id=f"{ENV}_mobile_brands_pipeline_serverless",
     start_date=datetime(2024, 1, 1),
     schedule_interval="0 1 * * *",
     catchup=False,
     max_active_runs=1,
     default_args=default_args,
-    tags=["mobile-brands"],
+    tags=["mobile-brands", "serverless"],
 ) as dag:
 
-    # -----------------------------------------------------------------------------
-    # 1. GENERATE FILES (Cloud Run)
-    # -----------------------------------------------------------------------------
+    # ✅ START
+    start = EmptyOperator(task_id="start")
+
+    # ✅ GENERATOR (Retry enabled)
     t_generate = CloudRunExecuteJobOperator(
         task_id="generate_excel",
         project_id=PROJECT_ID,
         region=REGION,
         job_name=f"{ENV}-generator",
         overrides=cloud_run_env(),
+        retries=3,
+        retry_delay=timedelta(minutes=2),
     )
 
-    # -----------------------------------------------------------------------------
-    # 2. TRANSFORM FILES
-    # -----------------------------------------------------------------------------
+    # ✅ TRANSFORM (Retry enabled)
     t_transform = CloudRunExecuteJobOperator(
         task_id="transform_csv",
         project_id=PROJECT_ID,
         region=REGION,
         job_name=f"{ENV}-transform",
         overrides=cloud_run_env(),
+        retries=3,
+        retry_delay=timedelta(minutes=2),
     )
 
-    # -----------------------------------------------------------------------------
-    # 3. CREATE CLUSTER
-    # -----------------------------------------------------------------------------
-    t_cluster = DataprocCreateClusterOperator(
-        task_id="create_cluster",
-        project_id=PROJECT_ID,
-        region=REGION,
-        cluster_name=CLUSTER_NAME,
-        cluster_config=CLUSTER_CONFIG,
-    )
-
-    # -----------------------------------------------------------------------------
-    # 4. BRONZE → SILVER → GOLD
-    # -----------------------------------------------------------------------------
-
-    t_bronze = DataprocSubmitJobOperator(
+    # ✅ BRONZE
+    t_bronze = DataprocCreateBatchOperator(
         task_id="bronze",
-        job=pyspark_job("bronze.py"),
         project_id=PROJECT_ID,
         region=REGION,
+        batch=dataproc_batch("bronze.py"),
     )
 
-    t_silver = DataprocSubmitJobOperator(
+    # ✅ SILVER
+    t_silver = DataprocCreateBatchOperator(
         task_id="silver",
-        job=pyspark_job("silver.py"),
         project_id=PROJECT_ID,
         region=REGION,
+        batch=dataproc_batch("silver.py"),
     )
 
-    t_gold = DataprocSubmitJobOperator(
+    # ✅ GOLD (No retry — heavy job)
+    t_gold = DataprocCreateBatchOperator(
         task_id="gold",
-        job=pyspark_job("gold.py"),
         project_id=PROJECT_ID,
         region=REGION,
+        batch=dataproc_batch("gold.py"),
+        retries=0
     )
 
-    # -----------------------------------------------------------------------------
-    # 5. ARCHIVE
-    # -----------------------------------------------------------------------------
+    # ✅ ARCHIVE
     t_archive = CloudRunExecuteJobOperator(
         task_id="archive",
         project_id=PROJECT_ID,
@@ -203,24 +212,21 @@ with DAG(
         overrides=cloud_run_env(),
     )
 
-    # -----------------------------------------------------------------------------
-    # 6. DELETE CLUSTER (ALWAYS)
-    # -----------------------------------------------------------------------------
-    t_delete = DataprocDeleteClusterOperator(
-        task_id="delete_cluster",
-        project_id=PROJECT_ID,
-        region=REGION,
-        cluster_name=CLUSTER_NAME,
-        trigger_rule=TriggerRule.ALL_DONE,
+    # ✅ SUCCESS EMAIL
+    t_success = EmailOperator(
+        task_id="success_email",
+        to=[EMAIL],
+        subject="✅ Airflow Pipeline SUCCESS",
+        html_content="""
+        <h3>✅ Pipeline completed successfully</h3>
+        """,
     )
 
-    # -----------------------------------------------------------------------------
-    # FLOW
-    # -----------------------------------------------------------------------------
+    # ✅ END
+    end = EmptyOperator(
+        task_id="end",
+        trigger_rule=TriggerRule.ALL_DONE
+    )
 
-    t_generate >> t_transform >> t_cluster
-    t_cluster >> t_bronze >> t_silver >> t_gold
-
-    # Archive completes first, then cluster is deleted (trigger_rule=ALL_DONE
-    # on t_delete ensures cleanup even if archive fails)
-    t_gold >> t_archive >> t_delete
+    # ✅ FLOW
+    start >> t_generate >> t_transform >> t_bronze >> t_silver >> t_gold >> t_archive >> t_success >> end
