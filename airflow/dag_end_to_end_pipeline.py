@@ -186,7 +186,7 @@ with DAG(
         task_id="generate_excel",
         project_id=PROJECT_ID,
         region=REGION,
-        job_name=f"{ENV}-generator",
+        job_name="mb-ingestion-job",
         overrides=cloud_run_env(),
         retries=3,  # ✅ retry because external dependency
         retry_delay=timedelta(minutes=2),
@@ -199,7 +199,7 @@ with DAG(
         task_id="transform_csv",
         project_id=PROJECT_ID,
         region=REGION,
-        job_name=f"{ENV}-transform",
+        job_name="mb-transform-job", 
         overrides=cloud_run_env(),
         retries=3,
         retry_delay=timedelta(minutes=2),
@@ -243,7 +243,7 @@ with DAG(
         task_id="archive",
         project_id=PROJECT_ID,
         region=REGION,
-        job_name=f"{ENV}-archive",
+        job_name="mb-archival-job", 
         overrides=cloud_run_env(),
     )
 
