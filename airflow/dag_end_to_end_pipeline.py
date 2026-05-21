@@ -6,7 +6,7 @@ FLOW:
 
 START
  ↓
-Cloud Run → Generator
+Cloud Run → Generator (Ingestion)
  ↓
 Cloud Run → Transform
  ↓
@@ -22,11 +22,17 @@ Cloud Run → Archive
  ↓
 END
 
-✅ FAILURE EMAIL (automatic)
+✅ FAILURE EMAIL (automatic via callback)
 --------------------------------------------------
 """
 
+# -----------------------------------------------------------------------------
+# IMPORTS
+# -----------------------------------------------------------------------------
+
 from datetime import datetime, timedelta
+
+import logging  # ✅ Standard logging (FIXED)
 
 from airflow import DAG
 from airflow.models import Variable
@@ -34,31 +40,36 @@ from airflow.operators.empty import EmptyOperator
 from airflow.operators.email import EmailOperator
 from airflow.providers.google.cloud.operators.dataproc import DataprocCreateBatchOperator
 from airflow.providers.google.cloud.operators.cloud_run import CloudRunExecuteJobOperator
-from airflow.utils.logging_mixin import LoggingMixin
 from airflow.utils.trigger_rule import TriggerRule
 
 
 # -----------------------------------------------------------------------------
-# LOGGER
+# LOGGER (✅ FIXED FROM LoggingMixin)
 # -----------------------------------------------------------------------------
-log = LoggingMixin().log
+log = logging.getLogger(__name__)
 
 
 # -----------------------------------------------------------------------------
-# CONFIG
+# CONFIG (Dynamic via Airflow Variables)
 # -----------------------------------------------------------------------------
 
-ENV        = Variable.get("MB_ENV", "dv")
+# ✅ Environment (dv / pd)
+ENV = Variable.get("MB_ENV", "dv")
+
+# ✅ Project details
 PROJECT_ID = Variable.get("MB_PROJECT_ID", "dev-env-496908")
-REGION     = Variable.get("MB_REGION", "us-central1")
+REGION = Variable.get("MB_REGION", "us-central1")
 
+# ✅ Buckets & dataset
 PIPELINE_BUCKET = Variable.get("MB_PIPELINE_BUCKET", "mb-pipeline-dev-496908")
-SOURCE_BUCKET   = Variable.get("MB_SOURCE_BUCKET", "mb-data-dev-496908")
-BQ_DATASET      = Variable.get("MB_BQ_DATASET", "mobile_brands")
+SOURCE_BUCKET = Variable.get("MB_SOURCE_BUCKET", "mb-data-dev-496908")
+BQ_DATASET = Variable.get("MB_BQ_DATASET", "mobile_brands")
 
+# ✅ Scripts location (Bronze/Silver/Gold pyspark scripts)
 SCRIPTS_URI = f"gs://{PIPELINE_BUCKET}/scripts"
 
-EMAIL = "dayasagarreddy2943@gmail.com"   # ✅ YOUR EMAIL
+# ✅ Alert email
+EMAIL = "dayasagarreddy2943@gmail.com"
 
 
 # -----------------------------------------------------------------------------
@@ -67,9 +78,9 @@ EMAIL = "dayasagarreddy2943@gmail.com"   # ✅ YOUR EMAIL
 
 def send_failure_email(context):
     """
-    ✅ Sends email when any task fails
+    ✅ Sends email automatically when ANY task fails
     """
-    log.error("Task failed! Sending email alert...")
+    log.error("Task failed! Sending failure email...")
 
     EmailOperator(
         task_id="send_failure_email",
@@ -79,29 +90,32 @@ def send_failure_email(context):
         <h3>🚨 Task Failed</h3>
         <b>DAG:</b> {context['dag'].dag_id}<br>
         <b>Task:</b> {context['task_instance'].task_id}<br>
-        <b>Execution Date:</b> {context['execution_date']}<br>
+        <b>Date:</b> {context['execution_date']}<br>
         <b><a href="{context['task_instance'].log_url}">View Logs</a></b>
         """,
     ).execute(context=context)
 
 
 # -----------------------------------------------------------------------------
-# DEFAULT ARGS
+# DEFAULT DAG ARGUMENTS
 # -----------------------------------------------------------------------------
 
 default_args = {
     "owner": "data-engineering",
-    "retries": 0,   # ✅ default no retry
+    "retries": 0,  # ✅ default no retry
     "retry_delay": timedelta(minutes=5),
-    "on_failure_callback": send_failure_email,  # ✅ EMAIL ALERT
+    "on_failure_callback": send_failure_email,  # ✅ auto failure email
 }
 
 
 # -----------------------------------------------------------------------------
-# HELPERS
+# HELPER: Cloud Run Environment Variables
 # -----------------------------------------------------------------------------
 
 def cloud_run_env():
+    """
+    ✅ Pass dynamic values to Cloud Run jobs
+    """
     log.info("Setting Cloud Run environment variables")
 
     return {
@@ -115,14 +129,21 @@ def cloud_run_env():
     }
 
 
+# -----------------------------------------------------------------------------
+# HELPER: Dataproc Serverless Batch Config
+# -----------------------------------------------------------------------------
+
 def dataproc_batch(script):
+    """
+    ✅ Creates Dataproc Serverless job for given script
+    """
     log.info(f"Preparing Dataproc batch for {script}")
 
     return {
         "pyspark_batch": {
             "main_python_file_uri": f"{SCRIPTS_URI}/{script}",
             "args": [
-                "--dt={{ ds }}",
+                "--dt={{ ds }}",  # execution date
                 "--run_id={{ run_id }}",
                 f"--pipeline_bucket={PIPELINE_BUCKET}",
                 f"--source_bucket={SOURCE_BUCKET}",
@@ -140,34 +161,40 @@ def dataproc_batch(script):
 
 
 # -----------------------------------------------------------------------------
-# DAG
+# DAG DEFINITION
 # -----------------------------------------------------------------------------
 
 with DAG(
     dag_id=f"{ENV}_mobile_brands_pipeline_serverless",
     start_date=datetime(2024, 1, 1),
-    schedule_interval="0 1 * * *",
+    schedule_interval="0 1 * * *",  # ✅ Daily at 1 AM
     catchup=False,
     max_active_runs=1,
     default_args=default_args,
     tags=["mobile-brands", "serverless"],
 ) as dag:
 
-    # ✅ START
+    # -------------------------------------------------------------------------
+    # START TASK
+    # -------------------------------------------------------------------------
     start = EmptyOperator(task_id="start")
 
-    # ✅ GENERATOR (Retry enabled)
+    # -------------------------------------------------------------------------
+    # CLOUD RUN: GENERATE (RETRY ENABLED)
+    # -------------------------------------------------------------------------
     t_generate = CloudRunExecuteJobOperator(
         task_id="generate_excel",
         project_id=PROJECT_ID,
         region=REGION,
         job_name=f"{ENV}-generator",
         overrides=cloud_run_env(),
-        retries=3,
+        retries=3,  # ✅ retry because external dependency
         retry_delay=timedelta(minutes=2),
     )
 
-    # ✅ TRANSFORM (Retry enabled)
+    # -------------------------------------------------------------------------
+    # CLOUD RUN: TRANSFORM (RETRY ENABLED)
+    # -------------------------------------------------------------------------
     t_transform = CloudRunExecuteJobOperator(
         task_id="transform_csv",
         project_id=PROJECT_ID,
@@ -178,7 +205,9 @@ with DAG(
         retry_delay=timedelta(minutes=2),
     )
 
-    # ✅ BRONZE
+    # -------------------------------------------------------------------------
+    # DATAPROC: BRONZE
+    # -------------------------------------------------------------------------
     t_bronze = DataprocCreateBatchOperator(
         task_id="bronze",
         project_id=PROJECT_ID,
@@ -186,7 +215,9 @@ with DAG(
         batch=dataproc_batch("bronze.py"),
     )
 
-    # ✅ SILVER
+    # -------------------------------------------------------------------------
+    # DATAPROC: SILVER
+    # -------------------------------------------------------------------------
     t_silver = DataprocCreateBatchOperator(
         task_id="silver",
         project_id=PROJECT_ID,
@@ -194,7 +225,9 @@ with DAG(
         batch=dataproc_batch("silver.py"),
     )
 
-    # ✅ GOLD (No retry — heavy job)
+    # -------------------------------------------------------------------------
+    # DATAPROC: GOLD (NO RETRY - HEAVY JOB)
+    # -------------------------------------------------------------------------
     t_gold = DataprocCreateBatchOperator(
         task_id="gold",
         project_id=PROJECT_ID,
@@ -203,7 +236,9 @@ with DAG(
         retries=0
     )
 
-    # ✅ ARCHIVE
+    # -------------------------------------------------------------------------
+    # CLOUD RUN: ARCHIVE
+    # -------------------------------------------------------------------------
     t_archive = CloudRunExecuteJobOperator(
         task_id="archive",
         project_id=PROJECT_ID,
@@ -212,21 +247,25 @@ with DAG(
         overrides=cloud_run_env(),
     )
 
-    # ✅ SUCCESS EMAIL
+    # -------------------------------------------------------------------------
+    # SUCCESS EMAIL (ONLY IF ALL TASKS PASS)
+    # -------------------------------------------------------------------------
     t_success = EmailOperator(
         task_id="success_email",
         to=[EMAIL],
         subject="✅ Airflow Pipeline SUCCESS",
-        html_content="""
-        <h3>✅ Pipeline completed successfully</h3>
-        """,
+        html_content="<h3>✅ Pipeline completed successfully</h3>",
     )
 
-    # ✅ END
+    # -------------------------------------------------------------------------
+    # END TASK (ALWAYS RUN EVEN IF FAILURE)
+    # -------------------------------------------------------------------------
     end = EmptyOperator(
         task_id="end",
         trigger_rule=TriggerRule.ALL_DONE
     )
 
-    # ✅ FLOW
-    start >> t_generate >> t_transform >> t_bronze >> t_silver >> t_gold >> t_archive >> t_success >> end
+    # -------------------------------------------------------------------------
+    # EXECUTION FLOW (STRICT ORDER)
+    # -------------------------------------------------------------------------
+    start >> t_generate >> t_transform >> t_bronze >> t_silver >> t_gold >> t_archive >> t_success >> end 
