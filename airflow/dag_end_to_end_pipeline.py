@@ -167,7 +167,7 @@ def dataproc_batch(script):
 with DAG(
     dag_id=f"{ENV}_mobile_brands_pipeline_serverless",
     start_date=datetime(2024, 1, 1),
-    schedule_interval="0 1 * * *",  # ✅ Daily at 1 AM
+    schedule="0 1 * * *",   # ✅ CORRECT # ✅ Daily at 1 AM
     catchup=False,
     max_active_runs=1,
     default_args=default_args,
