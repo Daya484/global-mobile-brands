@@ -187,7 +187,7 @@ with DAG(
         project_id=PROJECT_ID,
         region=REGION,
         job_name="mb-ingestion-job",
-        overrides=cloud_run_env(),
+        #overrides=cloud_run_env(),
         retries=3,  # ✅ retry because external dependency
         retry_delay=timedelta(minutes=2),
     )
@@ -200,7 +200,7 @@ with DAG(
         project_id=PROJECT_ID,
         region=REGION,
         job_name="mb-transform-job", 
-        overrides=cloud_run_env(),
+        #overrides=cloud_run_env(),
         retries=3,
         retry_delay=timedelta(minutes=2),
     )
@@ -244,7 +244,7 @@ with DAG(
         project_id=PROJECT_ID,
         region=REGION,
         job_name="mb-archival-job", 
-        overrides=cloud_run_env(),
+        #overrides=cloud_run_env(),
     )
 
     # -------------------------------------------------------------------------
