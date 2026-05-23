@@ -89,17 +89,13 @@ def parse_args():
 # ---------------------------------------------------------------------------
 def get_spark(env: str) -> SparkSession:
     """
-    Creates the Spark session with Delta Lake support.
-    Delta extensions are needed to read the Silver Delta table.
+    Creates the Spark session.
+    Delta Lake removed — reads Silver as Parquet (no extra JARs needed).
     shuffle.partitions=100 is better than the default 200 for this data volume.
     """
     return (
         SparkSession.builder
         .appName(f"mb-gold-{env}")
-        .config("spark.sql.extensions",
-                "io.delta.sql.DeltaSparkSessionExtension")
-        .config("spark.sql.catalog.spark_catalog",
-                "org.apache.spark.sql.delta.catalog.DeltaCatalog")
         .config("spark.sql.adaptive.enabled",      "true")
         .config("spark.sql.shuffle.partitions",    "100")
         .getOrCreate()
@@ -310,23 +306,21 @@ def main():
              args.project_id, args.dataset, args.env, args.pipeline_bucket)
 
     # ── Paths and table names ─────────────────────────────────────────────
-    # Silver Delta table path on GCS
-    silver_path = f"gs://{args.pipeline_bucket}/silver/mobile_brands/silver_brands_ingest_delta"
+    # Silver Parquet table path on GCS (written by silver.py)
+    silver_path = f"gs://{args.pipeline_bucket}/silver/mobile_brands/silver_brands_ingest"
 
-    # Full BigQuery table reference: project.dataset.table
+    # Full BigQuery table reference
     gold_bq_table = f"{args.project_id}.{args.dataset}.gold_brand_daily_v1"
 
-    # BigQuery indirect write mode requires a GCS staging bucket for temporary files
-    # We reuse the pipeline bucket for this
+    # BigQuery indirect write staging bucket
     temp_gcs_bucket = args.pipeline_bucket
 
-    # ── Step 1: Read Silver Delta table ──────────────────────────────────
-    log.info("Reading Silver Delta: %s", silver_path)
+    # ── Step 1: Read Silver Parquet table ──────────────────────────────────
+    log.info("Reading Silver Parquet: %s", silver_path)
     try:
-        # Delta format read — uses the _delta_log/ directory to find the latest snapshot
-        fact_df = spark.read.format("delta").load(silver_path)
+        fact_df = spark.read.parquet(silver_path)
     except Exception as exc:
-        log.error("Cannot read Silver Delta table: %s", exc)
+        log.error("Cannot read Silver Parquet table: %s", exc)
         spark.stop()
         sys.exit(1)
 

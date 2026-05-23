@@ -1,5 +1,5 @@
 """
-dataproc_jobs/silver.py — Bronze Parquet → Silver Delta Lake (FULL LOAD compatible)
+dataproc_jobs/silver.py — Bronze Parquet → Silver Parquet (FULL LOAD compatible)
 =================================================================================
 
 What this job does:
@@ -9,17 +9,10 @@ What this job does:
   2. Derives Market_code (first 3 chars of Distributor_code)
   3. Enforces the Silver schema (consistent data types)
   4. Deduplicates rows using BUSINESS KEY columns (latest load_timestamp wins)
-  5. Upserts (MERGE) the deduped batch into a Delta Lake table in GCS
+  5. Writes deduped data to Silver Parquet in GCS (dynamic partition overwrite)
 
-Why you got the error: date_reported missing
---------------------------------------------
-Bronze writes Parquet partitioned by date_reported:
-  raw_data/<brand>/date_reported=YYYY-MM-DD/part-*.parquet
-
-Spark often stores partition values in the DIRECTORY name, not inside the Parquet files.
-So `date_reported` may not appear when reading unless Spark is told the basePath.
-Spark docs note that when reading partition directories, you should set basePath to get
-partition columns inferred. 【3-18db02】
+NOTE: Delta Lake removed — uses native Parquet format for Dataproc Serverless
+      compatibility (no extra JARs required).
 """
 
 # -------------------------------
@@ -38,8 +31,6 @@ from pyspark.sql.types import (
     StringType, StructField, StructType, TimestampType,
 )
 
-from delta.tables import DeltaTable
-
 # -------------------------------
 # LOGGING SETUP
 # -------------------------------
@@ -53,7 +44,6 @@ log = logging.getLogger("silver")
 # -------------------------------
 # CONSTANTS
 # -------------------------------
-# Brand folders under gs://<pipeline_bucket>/raw_data/<brand>/
 BRAND_FOLDERS = ["apple", "samsung", "oppo", "vivo", "oneplus"]
 
 # -------------------------------
@@ -105,37 +95,36 @@ def parse_args():
     return args
 
 # -------------------------------
-# SPARK SESSION (Delta enabled)
+# SPARK SESSION (Parquet — no Delta JARs needed)
 # -------------------------------
 def get_spark(env: str) -> SparkSession:
     return (
         SparkSession.builder
         .appName(f"mb-silver-{env}")
-        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
-        .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
         .config("spark.sql.adaptive.enabled", "true")
+        # Dynamic partition overwrite: only overwrite partitions that appear in the data
+        # (safe for date-partitioned incremental loads)
+        .config("spark.sql.sources.partitionOverwriteMode", "dynamic")
         .getOrCreate()
     )
 
 # -------------------------------
-# READ BRONZE (FULL LOAD or BY DATE) ✅ FIXED
+# READ BRONZE (FULL LOAD or BY DATE)
 # -------------------------------
 def read_bronze(spark: SparkSession, pipeline_bucket: str, dt: Optional[str]):
     """
     Reads Bronze Parquet across ALL brands by reading brand folders one-by-one,
     then UNION-ing them.
 
-    ✅ Critical: set basePath per brand so Spark infers partition column date_reported
-       from folder names like date_reported=2026-05-20. 【3-18db02】
+    Critical: set basePath per brand so Spark infers partition column date_reported
+    from folder names like date_reported=2026-05-20.
     """
     base = f"gs://{pipeline_bucket}/raw_data/"
     dfs: List = []
 
     for brand in BRAND_FOLDERS:
-        # basePath must be the "table root" for that brand folder
         brand_base = f"{base}{brand}/"
 
-        # Read either one partition or all partitions
         if dt:
             path = f"{brand_base}date_reported={dt}/"
             log.info("Reading Bronze brand=%s for dt=%s from: %s", brand, dt, path)
@@ -146,15 +135,12 @@ def read_bronze(spark: SparkSession, pipeline_bucket: str, dt: Optional[str]):
         try:
             df = (
                 spark.read
-                # ✅ makes Spark add partition column(s) like date_reported
-                .option("basePath", brand_base)
+                .option("basePath", brand_base)   # ✅ infers date_reported partition column
                 .parquet(path)
             )
 
-            # Partition columns usually arrive as string; cast to DateType
-            # so Silver schema enforcement works.
+            # Partition columns arrive as string; cast to DateType
             df = df.withColumn("date_reported", F.col("date_reported").cast("date"))
-
             dfs.append(df)
 
         except Exception as exc:
@@ -164,8 +150,7 @@ def read_bronze(spark: SparkSession, pipeline_bucket: str, dt: Optional[str]):
         log.error("No Bronze data found in any brand folders.")
         return None
 
-    # UNION all brand DataFrames into one DataFrame
-    # allowMissingColumns=True makes union safe if one brand is missing a column.
+    # UNION all brand DataFrames into one
     final_df = dfs[0]
     for df in dfs[1:]:
         final_df = final_df.unionByName(df, allowMissingColumns=True)
@@ -205,40 +190,25 @@ def transform_and_dedup(df):
     return df_dedup.repartition(8)
 
 # -------------------------------
-# UPSERT INTO SILVER DELTA TABLE (path-based)
+# WRITE SILVER PARQUET (replaces Delta MERGE)
 # -------------------------------
-def upsert_to_silver(spark: SparkSession, df_deduped, silver_path: str):
-    # First run: create Delta table
-    if not DeltaTable.isDeltaTable(spark, silver_path):
-        log.info("First run: creating Silver Delta table at %s", silver_path)
-        (
-            df_deduped.write
-            .format("delta")
-            .mode("overwrite")
-            .partitionBy("date_reported")
-            .save(silver_path)
-        )
-        log.info("Silver Delta created at %s | rows=%d", silver_path, df_deduped.count())
-        return
-
-    # Subsequent runs: MERGE
-    log.info("Delta table exists. Performing MERGE (upsert) into %s", silver_path)
-
-    tgt = DeltaTable.forPath(spark, silver_path)
-    merge_condition = " AND ".join([f"t.{k} = s.{k}" for k in BUSINESS_KEY_COLS])
+def write_silver(spark: SparkSession, df_deduped, silver_path: str, dt: Optional[str]):
+    """
+    Writes Silver data as Parquet with dynamic partition overwrite.
+    - If dt is provided: only the matching date_reported partition is overwritten.
+    - If dt is None (full load): ALL partitions are overwritten.
+    """
+    log.info("Writing Silver Parquet to: %s (dt=%s)", silver_path, dt or "all")
 
     (
-        tgt.alias("t")
-        .merge(df_deduped.alias("s"), merge_condition)
-        .whenMatchedUpdate(
-            condition="s.load_timestamp > t.load_timestamp",
-            set={c: f"s.{c}" for c in df_deduped.columns}
-        )
-        .whenNotMatchedInsert(values={c: f"s.{c}" for c in df_deduped.columns})
-        .execute()
+        df_deduped.write
+        .format("parquet")
+        .mode("overwrite")                  # dynamic overwrite (per spark config above)
+        .partitionBy("date_reported")
+        .save(silver_path)
     )
 
-    log.info("Silver MERGE completed successfully.")
+    log.info("Silver Parquet written successfully at %s", silver_path)
 
 # -------------------------------
 # MAIN
@@ -250,7 +220,7 @@ def main():
     log.info("Silver job starting | dt=%s | run_id=%s | env=%s | bucket=%s",
              args.dt, args.run_id, args.env, args.pipeline_bucket)
 
-    silver_path = f"gs://{args.pipeline_bucket}/silver/mobile_brands/silver_brands_ingest_delta"
+    silver_path = f"gs://{args.pipeline_bucket}/silver/mobile_brands/silver_brands_ingest"
 
     df = read_bronze(spark, args.pipeline_bucket, args.dt)
     if df is None or df.rdd.isEmpty():
@@ -259,7 +229,7 @@ def main():
         sys.exit(1)
 
     df_deduped = transform_and_dedup(df)
-    upsert_to_silver(spark, df_deduped, silver_path)
+    write_silver(spark, df_deduped, silver_path, args.dt)
 
     spark.stop()
     log.info("Silver job completed successfully.")
