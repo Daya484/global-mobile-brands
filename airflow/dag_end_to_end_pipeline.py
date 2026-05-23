@@ -31,6 +31,7 @@ END
 # -----------------------------------------------------------------------------
 
 from datetime import datetime, timedelta
+import time
 
 import logging  # ✅ Standard logging (FIXED)
 
@@ -38,6 +39,7 @@ from airflow import DAG
 from airflow.models import Variable
 from airflow.operators.empty import EmptyOperator
 from airflow.operators.email import EmailOperator
+from airflow.operators.python import PythonOperator
 from airflow.providers.google.cloud.operators.dataproc import DataprocCreateBatchOperator
 from airflow.providers.google.cloud.operators.cloud_run import CloudRunExecuteJobOperator
 from airflow.utils.trigger_rule import TriggerRule
@@ -89,7 +91,8 @@ def send_failure_email(context):
         html_content=f"""
         <h3>🚨 Task Failed</h3>
         <b>DAG:</b> {context['dag'].dag_id}<br>
-        <b>Date:</b> {context.get('logical_date')}<br>
+        <b>Task:</b> {context['task_instance'].task_id}<br>
+        <b>Date:</b> {context.get('logical_date', context.get('data_interval_start', 'N/A'))}<br>
         <b><a href="{context['task_instance'].log_url}">View Logs</a></b>
         """,
     ).execute(context=context)
@@ -225,6 +228,7 @@ with DAG(
         task_id="bronze",
         project_id=PROJECT_ID,
         region=REGION,
+        batch_id="bronze-{{ ds }}",  # ✅ e.g. bronze-2026-05-23
         batch=dataproc_batch("bronze.py"),
     )
 
@@ -235,6 +239,7 @@ with DAG(
         task_id="silver",
         project_id=PROJECT_ID,
         region=REGION,
+        batch_id="silver-{{ ds }}",  # ✅ e.g. silver-2026-05-23
         batch=dataproc_batch("silver.py"),
     )
 
@@ -245,6 +250,7 @@ with DAG(
         task_id="gold",
         project_id=PROJECT_ID,
         region=REGION,
+        batch_id="gold-{{ ds }}",  # ✅ e.g. gold-2026-05-23
         batch=dataproc_batch("gold.py"),
         retries=0
     )
@@ -271,6 +277,19 @@ with DAG(
     )
 
     # -------------------------------------------------------------------------
+    # QUOTA RELEASE WAIT (GCP takes ~2 min to release CPU quota after batch)
+    # -------------------------------------------------------------------------
+    wait_after_bronze = PythonOperator(
+        task_id="wait_after_bronze",
+        python_callable=lambda: (log.info("Waiting 120s for GCP quota release after bronze..."), time.sleep(120)),
+    )
+
+    wait_after_silver = PythonOperator(
+        task_id="wait_after_silver",
+        python_callable=lambda: (log.info("Waiting 120s for GCP quota release after silver..."), time.sleep(120)),
+    )
+
+    # -------------------------------------------------------------------------
     # END TASK (ALWAYS RUN EVEN IF FAILURE)
     # -------------------------------------------------------------------------
     end = EmptyOperator(
@@ -279,6 +298,6 @@ with DAG(
     )
 
     # -------------------------------------------------------------------------
-    # EXECUTION FLOW (STRICT ORDER)
+    # EXECUTION FLOW (with quota wait between Dataproc jobs)
     # -------------------------------------------------------------------------
-    start >> t_generate >> t_transform >> t_bronze >> t_silver >> t_gold >> t_archive >> t_success >> end 
+    start >> t_generate >> t_transform >> t_bronze >> wait_after_bronze >> t_silver >> wait_after_silver >> t_gold >> t_archive >> t_success >> end
