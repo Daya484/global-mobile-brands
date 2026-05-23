@@ -135,6 +135,7 @@ def cloud_run_env():
 def dataproc_batch(script):
     """
     ✅ Creates Dataproc Serverless job for given script
+    ✅ Resource limits set to stay within free-tier quota
     """
     log.info(f"Preparing Dataproc batch for {script}")
 
@@ -150,6 +151,16 @@ def dataproc_batch(script):
                 f"--dataset={BQ_DATASET}",
                 f"--env={ENV}",
             ],
+        },
+        "runtime_config": {
+            "properties": {
+                # ✅ Limit executors to reduce CPU & Disk quota usage
+                "spark.dynamicAllocation.maxExecutors": "2",
+                "spark.dynamicAllocation.initialExecutors": "1",
+                "spark.executor.cores": "2",
+                "spark.executor.memory": "2g",
+                "spark.driver.memory": "2g",
+            }
         },
         "environment_config": {
             "execution_config": {
