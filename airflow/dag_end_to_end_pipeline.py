@@ -89,8 +89,7 @@ def send_failure_email(context):
         html_content=f"""
         <h3>🚨 Task Failed</h3>
         <b>DAG:</b> {context['dag'].dag_id}<br>
-        <b>Task:</b> {context['task_instance'].task_id}<br>
-        <b>Date:</b> {context['execution_date']}<br>
+        <b>Date:</b> {context.get('logical_date')}<br>
         <b><a href="{context['task_instance'].log_url}">View Logs</a></b>
         """,
     ).execute(context=context)
@@ -136,6 +135,7 @@ def cloud_run_env():
 def dataproc_batch(script):
     """
     ✅ Creates Dataproc Serverless job for given script
+    ✅ Resource limits set to stay within free-tier quota
     """
     log.info(f"Preparing Dataproc batch for {script}")
 
@@ -151,6 +151,16 @@ def dataproc_batch(script):
                 f"--dataset={BQ_DATASET}",
                 f"--env={ENV}",
             ],
+        },
+        "runtime_config": {
+            "properties": {
+                # ✅ Limit executors to reduce CPU & Disk quota usage
+                "spark.dynamicAllocation.maxExecutors": "2",
+                "spark.dynamicAllocation.initialExecutors": "1",
+                "spark.executor.cores": "2",
+                "spark.executor.memory": "2g",
+                "spark.driver.memory": "2g",
+            }
         },
         "environment_config": {
             "execution_config": {
