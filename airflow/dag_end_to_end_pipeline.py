@@ -154,12 +154,15 @@ def dataproc_batch(script):
         },
         "runtime_config": {
             "properties": {
-                # ✅ Limit executors to reduce CPU & Disk quota usage
-                "spark.dynamicAllocation.maxExecutors": "2",
-                "spark.dynamicAllocation.initialExecutors": "1",
-                "spark.executor.cores": "2",
-                "spark.executor.memory": "2g",
-                "spark.driver.memory": "2g",
+                # ✅ Dataproc Serverless constraints:
+                # - executor cores must be 4, 8, or 16 (not 2)
+                # - initialExecutors must be >= 2
+                # - driver memory min = cores × 1024mb (4 cores = min 4g)
+                "spark.executor.cores": "4",              # minimum allowed
+                "spark.dynamicAllocation.initialExecutors": "2",  # minimum allowed
+                "spark.dynamicAllocation.maxExecutors": "2",      # keep low
+                "spark.executor.memory": "4g",            # min for 4 cores
+                "spark.driver.memory": "4g",              # min for 4 cores
             }
         },
         "environment_config": {
