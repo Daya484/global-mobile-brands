@@ -154,7 +154,7 @@ def dataproc_batch(script):
         },
         "environment_config": {
             "execution_config": {
-                "service_account": f"{PROJECT_ID}-compute@developer.gserviceaccount.com"
+                "service_account": f"mb-pipeline-sa@{PROJECT_ID}.iam.gserviceaccount.com"
             }
         }
     }
