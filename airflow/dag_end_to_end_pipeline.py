@@ -89,7 +89,7 @@ def send_failure_email(context):
         html_content=f"""
         <h3>🚨 Task Failed</h3>
         <b>DAG:</b> {context['dag'].dag_id}<br>
-        <b>Task:</b> {context['task_instance'].task_id}<br>
+        <b>Date:</b> {context.get('logical_date', context.get('data_interval_start', 'N/A'))}<br> 
         <b>Date:</b> {context['execution_date']}<br>
         <b><a href="{context['task_instance'].log_url}">View Logs</a></b>
         """,
