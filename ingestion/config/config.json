@@ -1,9 +1,23 @@
 {
-  "project_name": "dv-env",
-  "source_bucket": "dv-mobile-brands",
-  "destination_bucket": "dv-mb-pipeline-bucket",
-  "landing_path": "landing",
-  "brands": ["Samsung", "Apple", "Oppo", "Vivo", "OnePlus"],
+  "bucket_base": "mobile_brands",
+  "landing_folder": "landing",
+  "tmp_dir": "/tmp/distributor_files",
+
   "log_level": "INFO",
-  "max_workers": 8
+
+  "num_distributors": 15,
+  "num_retailers": 10,
+
+  "brand_order": ["Samsung", "Vivo", "Oppo", "OnePlus", "Apple"],
+
+  "random_seed": 42,
+
+  "countries": {
+    "India":        { "prefix": "IND", "currency": "INR", "fx": 1.0,   "factor": 1.00, "gcs_folder": "INDIA" },
+    "China":        { "prefix": "CHN", "currency": "CNY", "fx": 0.086, "factor": 1.02, "gcs_folder": "CHINA" },
+    "America":      { "prefix": "USA", "currency": "USD", "fx": 0.012, "factor": 1.05, "gcs_folder": "AMERICA" },
+    "South Korea":  { "prefix": "KOR", "currency": "KRW", "fx": 16.2,  "factor": 1.04, "gcs_folder": "SOUTH KOREA" },
+    "Australia":    { "prefix": "AUS", "currency": "AUD", "fx": 0.018, "factor": 1.03, "gcs_folder": "AUSTRALIA" },
+    "South Africa": { "prefix": "ZAF", "currency": "ZAR", "fx": 0.23,  "factor": 1.06, "gcs_folder": "SOUTH AFRICA" }
+  }
 }

@@ -1,26 +1,30 @@
 """
-dataproc_jobs/bronze.py — Raw CSV → Bronze Parquet
-====================================================
-Reads transform zone CSVs, appends metadata (ingest_ts, source_file,
-run_id), and writes Parquet to bronze/ with partition dt=YYYY-MM-DD.
+dataproc_jobs/bronze.py — FULL LOAD VERSION (process ALL files)
 
-Idempotent: dynamic partition overwrite — safe to re-run.
-
-Usage:
-  spark-submit bronze.py \
-    --dt=2024-01-15 \
-    --run_id=scheduled__2024-01-15T010000 \
-    --pipeline_bucket=dv-mb-pipeline-bucket \
-    --env=dv
+What changed from your old version:
+✅ Reads ALL CSV files (no date filtering)
+✅ Still extracts date from file name
+✅ Safe because you archive files after processing
 """
 
-import argparse
-import logging
-import sys
-from datetime import datetime, timezone
+# -------------------------------
+# IMPORTS
+# -------------------------------
+import argparse        # to read command-line arguments
+import logging         # for printing logs
+import sys             # to exit job on failure
 
-from pyspark.sql import SparkSession, functions as F
+from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
+from pyspark.sql.types import (
+    DateType, IntegerType, LongType,
+    StringType, StructField, StructType, TimestampType
+)
 
+# -------------------------------
+# LOGGING SETUP
+# -------------------------------
+# This prints logs in nice format in Dataproc logs
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
@@ -28,95 +32,179 @@ logging.basicConfig(
 )
 log = logging.getLogger("bronze")
 
+# -------------------------------
+# CONSTANTS
+# -------------------------------
+# List of brands (folders in GCS)
 BRANDS = ["Samsung", "Apple", "Oppo", "Vivo", "OnePlus"]
 
+# -------------------------------
+# SCHEMA (FINAL CLEAN STRUCTURE)
+# -------------------------------
+# We enforce data types — very important for consistency
+BRONZE_SCHEMA = StructType([
+    StructField("Brand",            StringType(),    True),
+    StructField("Model",            StringType(),    True),
+    StructField("Distributor_code", StringType(),    True),
+    StructField("Retailer_code",    StringType(),    True),
+    StructField("Store_code",       StringType(),    True),
+    StructField("EAN_code",         LongType(),      True),
+    StructField("Currency",         StringType(),    True),
+    StructField("Price",            IntegerType(),   True),
+    StructField("Stock_units",      IntegerType(),   True),
+    StructField("Sale_units",       IntegerType(),   True),
 
+    # ✅ Metadata columns we generate
+    StructField("date_reported",    DateType(),      False),  # date from file name
+    StructField("file_name",        StringType(),    False),  # source file
+    StructField("load_timestamp",   TimestampType(), False),  # load time
+])
+
+# -------------------------------
+# ARGUMENT PARSING
+# -------------------------------
 def parse_args():
+    """
+    Reads arguments passed from gcloud dataproc command
+    """
     p = argparse.ArgumentParser()
-    p.add_argument("--dt",              required=True)
-    p.add_argument("--run_id",          required=True)
+
+    # GCS bucket where transformed CSV files exist
+    p.add_argument("--source_bucket", required=True)
+
+    # GCS bucket where Bronze data will be written
     p.add_argument("--pipeline_bucket", required=True)
-    p.add_argument("--env",             default="dv")
-    return p.parse_args()
+
+    # Only for logging
+    p.add_argument("--run_id", required=True)
+
+    # Environment (dv/prod)
+    p.add_argument("--env", default="dv")
+
+    args, _ = p.parse_known_args()
+    return args
 
 
-def get_spark(env: str) -> SparkSession:
+# -------------------------------
+# SPARK SESSION
+# -------------------------------
+def get_spark(env: str):
+    """
+    Creates Spark session on Dataproc
+    """
     return (
         SparkSession.builder
         .appName(f"mb-bronze-{env}")
+
+        # Allows overwriting only specific partitions safely
         .config("spark.sql.sources.partitionOverwriteMode", "dynamic")
+
+        # Spark auto optimization (AQE)
         .config("spark.sql.adaptive.enabled", "true")
+
         .getOrCreate()
     )
 
 
-def data_quality_gate(df, brand: str):
-    """Fail fast: row count > 0, mandatory cols not null."""
-    row_count = df.count()
-    if row_count == 0:
-        raise RuntimeError(f"DQ FAIL: Zero rows for {brand}")
-    for col in ["brand", "ingest_ts", "run_id", "dt"]:
-        if col not in df.columns:
-            raise RuntimeError(f"DQ FAIL: Missing column '{col}' in {brand}")
-        if df.filter(F.col(col).isNull()).count() > 0:
-            raise RuntimeError(f"DQ FAIL: Nulls in '{col}' for {brand}")
-    log.info("DQ Gate passed for %s (%d rows)", brand, row_count)
+# -------------------------------
+# PROCESS EACH BRAND
+# -------------------------------
+def process_brand(spark, args, brand: str):
+    """
+    Reads ALL CSV files for a brand and writes Bronze parquet
+    """
 
-
-def process_brand(spark, args, brand: str) -> int:
-    src = f"gs://{args.pipeline_bucket}/transform/dt={args.dt}/run_id={args.run_id}/*/{brand}.csv"
+    # ✅ STEP 1: Read ALL files (no date filtering)
+    src = f"gs://{args.source_bucket}/transformed/{brand.lower()}/*.csv"
     log.info("Reading: %s", src)
 
     try:
         df = spark.read.option("header", "true").csv(src)
     except Exception as exc:
-        log.warning("No data for %s: %s", brand, exc)
+        log.warning("No data found for brand=%s: %s", brand, exc)
         return 0
 
+    # If no data → skip
     if df.rdd.isEmpty():
-        log.warning("Empty data for %s — skipping.", brand)
+        log.warning("Empty dataset for brand=%s", brand)
         return 0
 
-    ingest_ts = datetime.now(timezone.utc).isoformat()
-    df = (
-        df
-        .withColumn("brand",       F.lit(brand))
-        .withColumn("ingest_ts",   F.lit(ingest_ts))
-        .withColumn("source_file", F.lit(src))
-        .withColumn("run_id",      F.lit(args.run_id))
-        .withColumn("dt",          F.lit(args.dt))
+    # ✅ STEP 2: Extract file name
+    df1 = df.withColumn(
+        "file_name",
+        F.substring_index(F.input_file_name(), "/", -1)
     )
 
-    # Data Quality Gate before writing
-    data_quality_gate(df, brand)
+    # ✅ STEP 3: Extract date from file name
+    # Example:
+    # AUSDST01_20260519.csv → 2026-05-19
+    df2 = df1.withColumn(
+        "date_reported",
+        F.to_date(
+            F.substring_index(
+                F.substring_index(F.col("file_name"), "_", -1), ".", 1
+            ),
+            "yyyyMMdd"
+        )
+    )
 
-    dest = f"gs://{args.pipeline_bucket}/bronze/brand={brand}/dt={args.dt}"
-    count = df.count()
-    df.write.mode("overwrite").parquet(dest)
-    log.info("Bronze written: %s (%d rows)", dest, count)
+    # ✅ STEP 4: Add load timestamp
+    df3 = df2.withColumn(
+        "load_timestamp",
+        F.current_timestamp()
+    )
+
+    # ✅ STEP 5: Enforce schema (important for consistency)
+    df_bronze = df3.select(
+        *[
+            F.col(f.name).cast(f.dataType).alias(f.name)
+            for f in BRONZE_SCHEMA.fields
+        ]
+    )
+
+    # ✅ STEP 6: Write to Bronze (Parquet format)
+    dest = f"gs://{args.pipeline_bucket}/raw_data/{brand.lower()}/"
+
+    count = df_bronze.count()   # triggers execution
+
+    df_bronze.write \
+        .mode("append") \
+        .partitionBy("date_reported") \
+        .parquet(dest)
+
+    log.info("Written: %s | rows=%d", dest, count)
+
     return count
 
 
+# -------------------------------
+# MAIN FUNCTION
+# -------------------------------
 def main():
-    args  = parse_args()
+    args = parse_args()
     spark = get_spark(args.env)
-    log.info("Bronze job | dt=%s | run_id=%s | env=%s", args.dt, args.run_id, args.env)
 
-    total = 0
-    failed = []
+    log.info("Bronze job started | run_id=%s", args.run_id)
+    log.info("source_bucket=%s | pipeline_bucket=%s",
+             args.source_bucket, args.pipeline_bucket)
+
+    total_rows = 0
+
+    # Loop through each brand
     for brand in BRANDS:
         try:
-            total += process_brand(spark, args, brand)
-        except RuntimeError as exc:
-            log.error(exc)
-            failed.append(brand)
+            total_rows += process_brand(spark, args, brand)
+        except Exception as exc:
+            log.error("FAILED for brand=%s: %s", brand, exc)
+            sys.exit(1)  # fail job if any brand fails
 
     spark.stop()
-    if failed:
-        log.error("Bronze FAILED for: %s", failed)
-        sys.exit(1)
-    log.info("Bronze complete | total_rows=%d", total)
+
+    log.info("Bronze complete | total_rows=%d", total_rows)
 
 
+# -------------------------------
+# ENTRY POINT
+# -------------------------------
 if __name__ == "__main__":
     main()

@@ -1,158 +1,256 @@
-"""
-transform/main.py — Cloud Run Job: Clean landing/ CSVs → transform/
-====================================================================
-Config loaded from config/config.json (overrideable by env vars).
-Multi-threaded: each CSV blob processed in parallel.
-
-GCS output (idempotent):
-  transform/dt=YYYY-MM-DD/run_id=<run_id>/<folder>/<brand>.csv
-"""
-
 import io
+import os
 import json
 import logging
-import os
-import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
-from pathlib import Path
-from threading import Lock
 
 import pandas as pd
 from google.cloud import storage
 
-# ── Config ────────────────────────────────────────────────────────────────────
 
-def load_config() -> dict:
-    cfg_path = Path(__file__).parent / "config" / "config.json"
-    with open(cfg_path) as f:
-        cfg = json.load(f)
-    overrides = {
-        "project_name":    os.getenv("PROJECT_NAME"),
-        "pipeline_bucket": os.getenv("DEST_BUCKET"),
-        "log_level":       os.getenv("LOG_LEVEL"),
-    }
-    for k, v in overrides.items():
-        if v is not None:
-            cfg[k] = v
-    return cfg
+# -----------------------------------------------------------------------------
+# CONFIG LOADING
+# -----------------------------------------------------------------------------
 
-# ── Logging ───────────────────────────────────────────────────────────────────
+def load_config():
+    with open("config/config.json", "r") as f:
+        return json.load(f)
 
-def setup_logging(level: str = "INFO") -> logging.Logger:
+
+def setup_logging(level):
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.INFO),
-        format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
-        stream=sys.stdout,
+        format="%(asctime)s [%(levelname)s] [%(threadName)s] %(message)s",
     )
     return logging.getLogger("transform")
 
-# ── GCS helpers ───────────────────────────────────────────────────────────────
 
-def get_gcs_client() -> storage.Client:
-    return storage.Client()
+# -----------------------------------------------------------------------------
+# THREAD-LOCAL GCS CLIENT
+# -----------------------------------------------------------------------------
 
-def list_landing_blobs(client: storage.Client, bucket_name: str,
-                       landing_path: str, dt: str, run_id: str) -> list:
-    """List all CSV blobs in landing/dt=<dt>/run_id=<run_id>/"""
-    prefix = f"{landing_path}/dt={dt}/run_id={run_id}/"
-    return [b for b in client.list_blobs(bucket_name, prefix=prefix)
-            if b.name.endswith(".csv") and b.size > 0]
+_thread_local = threading.local()
 
-def clean_dataframe(df: pd.DataFrame, brand: str, dt: str,
-                    run_id: str, ingest_ts: str) -> pd.DataFrame:
-    """Normalise headers, strip whitespace, add pipeline metadata columns."""
-    df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
-    for col in df.select_dtypes(include="object").columns:
-        df[col] = df[col].str.strip()
-    df["brand"]     = brand
-    df["dt"]        = dt
-    df["run_id"]    = run_id
-    df["ingest_ts"] = ingest_ts
-    return df
+def get_client():
+    if not hasattr(_thread_local, "client"):
+        _thread_local.client = storage.Client()
+    return _thread_local.client
 
-def upload_transformed_csv(client: storage.Client, bucket_name: str,
-                           df: pd.DataFrame, brand: str, folder: str,
-                           transform_path: str, dt: str, run_id: str,
-                           ingest_ts: str) -> str:
-    """Write cleaned DataFrame as CSV to transform/ zone, return GCS URI."""
-    dest_path = f"{transform_path}/dt={dt}/run_id={run_id}/{folder}/{brand}.csv"
+
+# -----------------------------------------------------------------------------
+# HELPERS
+# -----------------------------------------------------------------------------
+
+def list_excel_files(bucket, source_prefix, excel_exts, run_date_yyyymmdd, country_filter):
+    result = {}
+
+    for blob in bucket.list_blobs(prefix=f"{source_prefix}/"):
+        if blob.name.endswith("/"):
+            continue
+
+        if not blob.name.lower().endswith(excel_exts):
+            continue
+
+        parts = blob.name.split("/")
+        if len(parts) < 3:
+            continue
+
+        country = parts[1]
+
+        if country_filter and country.upper() != country_filter.upper():
+            continue
+
+        if run_date_yyyymmdd:
+            base = os.path.basename(blob.name)
+            if f"_{run_date_yyyymmdd}" not in base:
+                continue
+
+        result.setdefault(country, []).append(blob.name)
+
+    return result
+
+
+def download_blob(blob):
     buf = io.BytesIO()
-    df.to_csv(buf, index=False)
+    blob.download_to_file(buf)
     buf.seek(0)
-    blob = client.bucket(bucket_name).blob(dest_path)
-    blob.metadata = {"brand": brand, "dt": dt, "run_id": run_id,
-                     "ingest_ts": ingest_ts, "rows": str(len(df))}
-    blob.upload_from_file(buf, content_type="text/csv")
-    return f"gs://{bucket_name}/{dest_path}"
+    return buf.read()
 
-# ── Worker ────────────────────────────────────────────────────────────────────
 
-_lock    = Lock()
-_success = 0
-_errors  = 0
-log      = logging.getLogger("transform")
+def read_excel_sheets(file_bytes, blob_name, brand_sheets, log):
+    sheets = {}
 
-def _process_blob(client, cfg, blob, dt, run_id, ingest_ts) -> str:
-    global _success, _errors
     try:
-        raw    = blob.download_as_bytes()
-        df     = pd.read_csv(io.BytesIO(raw))
-        parts  = blob.name.split("/")
-        brand  = parts[-1].replace(".csv", "")
-        folder = parts[-2]
-        df     = clean_dataframe(df, brand, dt, run_id, ingest_ts)
-        path   = upload_transformed_csv(
-            client, cfg["pipeline_bucket"], df, brand, folder,
-            cfg["transform_path"], dt, run_id, ingest_ts,
-        )
-        log.info("Transformed → %s (%d rows)", path, len(df))
-        with _lock:
-            _success += 1
-        return f"OK: {path}"
-    except Exception as exc:
-        log.error("FAILED: %s — %s", blob.name, exc, exc_info=True)
-        with _lock:
-            _errors += 1
-        return f"FAILED: {blob.name} — {exc}"
+        xls = pd.ExcelFile(io.BytesIO(file_bytes), engine="openpyxl")
+    except Exception as e:
+        log.error("Failed to read %s: %s", blob_name, e)
+        return sheets
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+    for brand in brand_sheets:
+        if brand not in xls.sheet_names:
+            continue
+        try:
+            sheets[brand] = xls.parse(brand)
+        except Exception as e:
+            log.error("Error reading sheet %s in %s: %s", brand, blob_name, e)
+
+    return sheets
+
+
+def df_to_csv_bytes(df):
+    buf = io.StringIO()
+    df.to_csv(buf, index=False)
+    return buf.getvalue().encode("utf-8")
+
+
+def excel_to_csv_name(filename, excel_exts):
+    for ext in excel_exts:
+        if filename.lower().endswith(ext):
+            return filename[:-len(ext)] + ".csv"
+    return filename + ".csv"
+
+
+def get_dest_path(transformed_root, brand_folder, csv_name):
+    return f"{transformed_root}/{brand_folder}/{csv_name}"
+
+
+# -----------------------------------------------------------------------------
+# PROCESS FILE
+# -----------------------------------------------------------------------------
+
+def process_file(blob_name, bucket_name, transformed_root, brand_sheets,
+                 brand_folder_map, excel_exts, skip_if_exists, log):
+
+    client = get_client()
+    bucket = client.bucket(bucket_name)
+
+    src_blob = bucket.blob(blob_name)
+
+    log.info("Processing %s", blob_name)
+
+    try:
+        data_bytes = download_blob(src_blob)
+    except Exception as e:
+        log.error("Download failed %s: %s", blob_name, e)
+        return 0, 1
+
+    sheets = read_excel_sheets(data_bytes, blob_name, brand_sheets, log)
+
+    if not sheets:
+        return 0, 0
+
+    csv_name = excel_to_csv_name(os.path.basename(blob_name), excel_exts)
+
+    uploaded = 0
+    errors = 0
+
+    for brand, df in sheets.items():
+        folder = brand_folder_map.get(brand)
+        if not folder:
+            log.warning("Missing mapping for %s", brand)
+            continue
+
+        dest_path = get_dest_path(transformed_root, folder, csv_name)
+        dest_blob = bucket.blob(dest_path)
+
+        if skip_if_exists:
+            try:
+                if dest_blob.exists(client=client):
+                    log.info("Skip exists: %s", dest_path)
+                    continue
+            except Exception:
+                pass
+
+        try:
+            data = df_to_csv_bytes(df)
+            dest_blob.upload_from_string(data, content_type="text/csv")
+            uploaded += 1
+        except Exception as e:
+            log.error("Upload failed %s: %s", dest_path, e)
+            errors += 1
+
+    return uploaded, errors
+
+
+# -----------------------------------------------------------------------------
+# MAIN
+# -----------------------------------------------------------------------------
 
 def main():
-    global log, _success, _errors
-    _success = _errors = 0
-
     cfg = load_config()
     log = setup_logging(cfg.get("log_level", "INFO"))
 
-    dt        = os.getenv("DT", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
-    run_id    = os.getenv("RUN_ID", f"manual__{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}")
-    ingest_ts = datetime.now(timezone.utc).isoformat()
+    env = os.getenv("ENV", "dv")
 
-    log.info("Transform started | project=%s | bucket=%s | dt=%s | run_id=%s",
-             cfg["project_name"], cfg["pipeline_bucket"], dt, run_id)
+    # ✅ Project name (your org format)
+    project_name = f"{env}-env"
 
-    client = get_gcs_client()
-    blobs  = list_landing_blobs(client, cfg["pipeline_bucket"],
-                                cfg["landing_path"], dt, run_id)
+    # ✅ Bucket
+    bucket_base = cfg.get("bucket_base", "mobile_brands")
+    bucket_name = os.getenv("BUCKET_NAME", f"{bucket_base}_{env}")
 
-    if not blobs:
-        log.warning("No landing files found for dt=%s run_id=%s — nothing to do.", dt, run_id)
-        sys.exit(0)
+    source_prefix = cfg.get("source_prefix", "landing")
+    transformed_root = cfg.get("transformed_root", "transformed")
 
-    log.info("Found %d file(s) to transform.", len(blobs))
+    brand_sheets = cfg["brand_sheets"]
+    brand_folder_map = cfg["brand_folder_map"]
 
-    with ThreadPoolExecutor(max_workers=cfg.get("max_workers", 8)) as executor:
-        futures = [executor.submit(_process_blob, client, cfg, b, dt, run_id, ingest_ts)
-                   for b in blobs]
+    excel_exts = tuple(cfg.get("excel_extensions", [".xlsx"]))
+    max_workers = int(cfg.get("max_workers", 10))
+
+    skip_if_exists = cfg.get("skip_if_transformed_exists", True)
+
+    run_date = os.getenv("RUN_DATE")
+    run_date_yyyymmdd = run_date.replace("-", "") if run_date else None
+
+    country_filter = os.getenv("COUNTRY_FILTER")
+
+    client = storage.Client()
+    bucket = client.bucket(bucket_name)
+
+    log.info("Project: %s | Bucket: %s", project_name, bucket_name)
+
+    file_map = list_excel_files(
+        bucket,
+        source_prefix,
+        excel_exts,
+        run_date_yyyymmdd,
+        country_filter
+    )
+
+    all_files = []
+    for files in file_map.values():
+        all_files.extend(files)
+
+    total_uploaded = 0
+    total_errors = 0
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [
+            executor.submit(
+                process_file,
+                f,
+                bucket_name,
+                transformed_root,
+                brand_sheets,
+                brand_folder_map,
+                excel_exts,
+                skip_if_exists,
+                log
+            )
+            for f in all_files
+        ]
+
         for future in as_completed(futures):
-            result = future.result()
-            if "FAILED" in result:
-                log.error(result)
+            uploaded, errors = future.result()
+            total_uploaded += uploaded
+            total_errors += errors
 
-    log.info("Transform complete | success=%d | errors=%d", _success, _errors)
-    if _errors > 0:
-        sys.exit(1)
+    log.info("DONE | Uploaded=%d | Errors=%d", total_uploaded, total_errors)
+
+    if total_errors > 0:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
