@@ -249,6 +249,7 @@ gcloud services enable \
   run.googleapis.com \
   dataproc.googleapis.com \
   composer.googleapis.com \
+  container.googleapis.com \
   artifactregistry.googleapis.com \
   cloudbuild.googleapis.com \
   bigquery.googleapis.com \
@@ -276,11 +277,19 @@ for ROLE in \
   roles/bigquery.dataEditor \
   roles/bigquery.jobUser \
   roles/run.invoker \
+  roles/composer.worker \
   roles/logging.logWriter; do
   gcloud projects add-iam-policy-binding $PROJECT_ID \
     --member="serviceAccount:$SA_EMAIL" \
     --role="$ROLE"
 done
+
+# Grant Composer Service Agent permission to use the custom service account
+export PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format="value(projectNumber)")
+
+gcloud iam service-accounts add-iam-policy-binding $SA_EMAIL \
+  --member="serviceAccount:service-${PROJECT_NUMBER}@cloudcomposer-accounts.iam.gserviceaccount.com" \
+  --role="roles/composer.ServiceAgentV2Ext"
 ```
 
 #### Step 1.5 — Create GCS Buckets
@@ -371,7 +380,7 @@ gcloud storage ls gs://${PIPELINE_BUCKET}/scripts/
 # ⚠️ This takes 20-30 minutes!
 gcloud composer environments create mb-composer \
   --location=$REGION \
-  --image-version=composer-2.6.6-airflow-2.7.3 \
+  --image-version=composer-2.17.4-airflow-2.10.5 \
   --environment-size=small \
   --service-account=$SA_EMAIL
 ```
