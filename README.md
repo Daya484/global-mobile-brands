@@ -108,33 +108,12 @@ archival (Cloud Run Job)
 
 ---
 
-## Deployment (Cloud Shell)
+## Documentation Guides
 
-```bash
-# 1. Set environment
-export ENV=dv   # or pd
+For detailed setup, explanation, and deployment commands for each component, refer to the following guides:
 
-# 2. Build and deploy via Cloud Build
-gcloud builds submit . \
-  --config=cloudbuild.yaml \
-  --substitutions="_ENV=${ENV},_PROJECT_ID=dv-env,_PIPELINE_BUCKET=dv-mb-pipeline-bucket" \
-  --project=dv-env
-
-# 3. Set Airflow Variables in Composer
-gcloud composer environments run dv-mb-composer \
-  --location=us-central1 --project=dv-env \
-  variables -- set MB_ENV dv
-```
-
----
-
-## Airflow Variables to Set
-
-```
-MB_ENV             = dv
-MB_PROJECT_ID      = dv-env
-MB_REGION          = us-central1
-MB_PIPELINE_BUCKET = dv-mb-pipeline-bucket
-MB_SOURCE_BUCKET   = dv-mobile-brands
-MB_BQ_DATASET      = mobile_brands
-```
+* [PD-DEPLOYMENT.md](file:///c:/Users/dayas/global-mobile-brands/PD-DEPLOYMENT.md) — Production (PD) Deployment Checklist
+* [CLOUD-RUN.md](file:///c:/Users/dayas/global-mobile-brands/CLOUD-RUN.md) — Cloud Run Jobs guide (Extract, Transform, Archive)
+* [AIRFLOW.md](file:///c:/Users/dayas/global-mobile-brands/AIRFLOW.md) — Airflow & Cloud Composer guide (DAG & notifications)
+* [DATAPROC.md](file:///c:/Users/dayas/global-mobile-brands/DATAPROC.md) — Dataproc Serverless PySpark guide (Bronze, Silver, Gold layers)
+* [CLOUD-BUILD.md](file:///c:/Users/dayas/global-mobile-brands/CLOUD-BUILD.md) — Cloud Build CI/CD deployment guide
