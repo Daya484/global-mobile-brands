@@ -10,8 +10,8 @@
 5. [Key Differences: DV vs PD](#dv-vs-pd-differences)
 6. [Checklist](#checklist)
 
-> [!NOTE]
-> **Cloud Build CI/CD is excluded from this guide.** This covers manual deployment only. Cloud Build can be set up later.
+> [!TIP]
+> **Cloud Build CI/CD is fully integrated.** You can deploy changes automatically by pushing to GitHub or manually triggering Cloud Build using `cloudbuild.yaml`.
 
 ---
 
@@ -50,6 +50,10 @@ graph TD
         E["airflow/<br>dag_end_to_end_pipeline.py"]
     end
 
+    subgraph "Cloud Build (CI/CD)"
+        CB["Cloud Build Trigger / Manual Run"]
+    end
+
     subgraph "Artifact Registry (Docker Image Storage)"
         G["mb-ingestion:latest"]
         H["mb-transform:latest"]
@@ -81,16 +85,26 @@ graph TD
         S["Airflow DAG"]
     end
 
-    A -->|"gcloud builds submit"| G
-    B -->|"gcloud builds submit"| H
-    C -->|"gcloud builds submit"| I
+    %% GitHub / Code triggers Cloud Build
+    A & B & C & D & E -->|"Push to Branch"| CB
+
+    %% Cloud Build compiles and pushes images to Artifact Registry
+    CB -->|"builds & pushes"| G
+    CB -->|"builds & pushes"| H
+    CB -->|"builds & pushes"| I
+
+    %% Cloud Build deploys/updates Cloud Run Jobs
+    CB -->|"deploys / updates"| J
+    CB -->|"deploys / updates"| K
+    CB -->|"deploys / updates"| L
+
+    %% Cloud Build uploads scripts & DAGs to GCS
+    CB -->|"uploads Spark scripts to scripts/"| N
+    CB -->|"uploads DAG to dags/"| S
 
     G -->|"image reference"| J
     H -->|"image reference"| K
     I -->|"image reference"| L
-
-    D -->|"uploaded to"| N
-    E -->|"uploaded to"| S
 
     J -->|"writes Excel to"| M
     K -->|"reads Excel, writes CSV to"| M
