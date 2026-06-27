@@ -40,6 +40,29 @@ The `cloudbuild.yaml` file uses substitution variables to remain environment-agn
 | `_PIPELINE_BUCKET` | Processing files GCS bucket | `mb-pipeline-pd-495516` |
 | `_COMPOSER_BUCKET` | Composer DAGs bucket name | `us-central1-pd-environment--bdf24ecd-bucket` |
 
+### Step 3.2: Grant Service Account Permissions
+Before running or configuring builds, you must grant the Cloud Build service accounts the right permissions to deploy Cloud Run jobs and write to GCS:
+
+```bash
+# Set your project ID
+export PROJECT_ID="pd-env-495516"
+export PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format="value(projectNumber)")
+
+# 1. Authorize default Cloud Build Service Account
+for ROLE in roles/run.admin roles/iam.serviceAccountUser roles/storage.objectAdmin; do
+  gcloud projects add-iam-policy-binding $PROJECT_ID \
+    --member="serviceAccount:${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com" \
+    --role="$ROLE"
+done
+
+# 2. Authorize default Compute Engine Service Account (used by Cloud Build in newer projects)
+for ROLE in roles/run.admin roles/iam.serviceAccountUser roles/storage.objectAdmin; do
+  gcloud projects add-iam-policy-binding $PROJECT_ID \
+    --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+    --role="$ROLE"
+done
+```
+
 ---
 
 ## 🛠️ How to Deploy & Run
