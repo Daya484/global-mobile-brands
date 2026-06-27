@@ -62,6 +62,7 @@ To build and deploy the entire pipeline instantly without pushing code to GitHub
 gcloud builds submit \
   --config=cloudbuild.yaml \
   --substitutions=\
+SHORT_SHA=$(git rev-parse --short HEAD),\
 _ENV=pd,\
 _PROJECT_ID=pd-env-495516,\
 _REGION=us-central1,\
