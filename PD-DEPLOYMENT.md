@@ -554,8 +554,13 @@ Use this to track your PD deployment progress:
 - [ ] Get Composer bucket name
 - [ ] Upload DAG file
 - [ ] Set all 6 Airflow Variables for PD
+- [ ] Configure Airflow Email Notifications (SMTP)
 
-### Phase 4: Test
+### Phase 4: CI/CD Setup
+- [ ] Grant Service Account Permissions to Cloud Build SAs
+- [ ] Create Cloud Build Trigger in GCP Console with Substitution Variables
+
+### Phase 5: Test
 - [ ] Test ingestion job manually
 - [ ] Test transform job manually
 - [ ] Test archival job manually
