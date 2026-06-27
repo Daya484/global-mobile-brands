@@ -146,7 +146,7 @@ Instead of using your personal account, you create a dedicated service account w
 | `dataproc.editor` | Create and run Dataproc Spark jobs |
 | `bigquery.dataEditor` | Insert/update data in BigQuery tables |
 | `bigquery.jobUser` | Run BigQuery queries |
-| `run.invoker` | Execute Cloud Run Jobs |
+| `run.developer` | Execute & monitor Cloud Run Jobs |
 | `logging.logWriter` | Write application logs |
 
 ### 5. 🪣 GCS Buckets (2 buckets)
@@ -274,10 +274,13 @@ gcloud iam service-accounts create mb-pipeline-sa \
 for ROLE in \
   roles/storage.objectAdmin \
   roles/dataproc.editor \
+  roles/dataproc.worker \
   roles/bigquery.dataEditor \
   roles/bigquery.jobUser \
-  roles/run.invoker \
+  roles/bigquery.readSessionUser \
+  roles/run.developer \
   roles/composer.worker \
+  roles/iam.serviceAccountUser \
   roles/logging.logWriter; do
   gcloud projects add-iam-policy-binding $PROJECT_ID \
     --member="serviceAccount:$SA_EMAIL" \
@@ -290,6 +293,11 @@ export PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format="value(pro
 gcloud iam service-accounts add-iam-policy-binding $SA_EMAIL \
   --member="serviceAccount:service-${PROJECT_NUMBER}@cloudcomposer-accounts.iam.gserviceaccount.com" \
   --role="roles/composer.ServiceAgentV2Ext"
+
+# Grant Editor role to Google APIs Service Agent
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:${PROJECT_NUMBER}@cloudservices.gserviceaccount.com" \
+  --role="roles/editor"
 ```
 
 #### Step 1.5 — Create GCS Buckets
@@ -436,6 +444,28 @@ gcloud composer environments run mb-composer \
 ```bash
 gcloud composer environments run mb-composer \
   --location=$REGION variables -- list
+```
+
+#### Step 3.5 — Configure Airflow Email Notifications (SMTP)
+To get actual emails when the DAG execution succeeds or fails, configure Gmail SMTP overrides and add the `smtp_default` connection (replace the password placeholder with your 16-character Google App Password):
+
+1. **Add the Airflow SMTP connection**:
+```bash
+gcloud composer environments run mb-composer \
+  --location=$REGION \
+  connections add -- smtp_default \
+  --conn-type=email \
+  --conn-host=smtp.gmail.com \
+  --conn-login=dayasagarreddy2943@gmail.com \
+  --conn-password=ykqqzaokttfyqfad \
+  --conn-port=587
+```
+
+2. **Apply the Airflow configuration overrides**:
+```bash
+gcloud composer environments update mb-composer \
+  --location=$REGION \
+  --update-airflow-configs=email-email_backend=airflow.utils.email.send_email_smtp,smtp-smtp_host=smtp.gmail.com,smtp-smtp_port=587,smtp-smtp_ssl=False,smtp-smtp_starttls=True,smtp-smtp_user=dayasagarreddy2943@gmail.com,smtp-smtp_mail_from=dayasagarreddy2943@gmail.com
 ```
 
 ---
