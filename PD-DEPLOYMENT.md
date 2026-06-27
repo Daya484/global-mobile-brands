@@ -274,10 +274,12 @@ gcloud iam service-accounts create mb-pipeline-sa \
 for ROLE in \
   roles/storage.objectAdmin \
   roles/dataproc.editor \
+  roles/dataproc.worker \
   roles/bigquery.dataEditor \
   roles/bigquery.jobUser \
   roles/run.developer \
   roles/composer.worker \
+  roles/iam.serviceAccountUser \
   roles/logging.logWriter; do
   gcloud projects add-iam-policy-binding $PROJECT_ID \
     --member="serviceAccount:$SA_EMAIL" \
