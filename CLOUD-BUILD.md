@@ -67,18 +67,19 @@ done
 
 ## 🛠️ How to Deploy & Run
 
-### Step 3.2: Create a Cloud Build Trigger in GCP Console
+### Step 3.3: Create a Cloud Build Trigger in GCP Console
 To set up automated deployments on git push:
 1. Connect your GitHub repository to Google Cloud Build in the GCP Console (**Cloud Build** > **Repositories**).
 2. Go to **Triggers** and click **Create Trigger**.
 3. Configure settings:
    * **Name**: `mb-pipeline-prod-deploy`
    * **Event**: Push to a branch
-   * **Branch**: `^pd-env$` (or `^coding-branch-daya$` for DV)
+   * **Branch**: `^pd-env$` (or `^coding-branch-daya$` for DV) (Keep **Invert regex** unchecked)
    * **Configuration**: Cloud Build configuration file (`cloudbuild.yaml`)
-   * **Substitution Variables**: Add all the keys and values from the table above.
+   * **Service account**: Select `mb-pipeline-sa@pd-env-495516.iam.gserviceaccount.com` (under the **Advanced** section).
+   * **Substitution Variables**: Scroll down to the bottom of the page, expand the **Advanced** section if collapsed, and scroll past the **Service account** field to find the **Substitution variables** section. Click **+ Add variable** and enter the keys and values from the table above.
 
-### Step 3.3: Submit a Manual Build (For Testing)
+### Step 3.4: Submit a Manual Build (For Testing)
 To build and deploy the entire pipeline instantly without pushing code to GitHub, run the `gcloud builds submit` command in Cloud Shell:
 
 ```bash
