@@ -146,7 +146,7 @@ Instead of using your personal account, you create a dedicated service account w
 | `dataproc.editor` | Create and run Dataproc Spark jobs |
 | `bigquery.dataEditor` | Insert/update data in BigQuery tables |
 | `bigquery.jobUser` | Run BigQuery queries |
-| `run.invoker` | Execute Cloud Run Jobs |
+| `run.developer` | Execute & monitor Cloud Run Jobs |
 | `logging.logWriter` | Write application logs |
 
 ### 5. 🪣 GCS Buckets (2 buckets)
@@ -276,7 +276,7 @@ for ROLE in \
   roles/dataproc.editor \
   roles/bigquery.dataEditor \
   roles/bigquery.jobUser \
-  roles/run.invoker \
+  roles/run.developer \
   roles/composer.worker \
   roles/logging.logWriter; do
   gcloud projects add-iam-policy-binding $PROJECT_ID \
