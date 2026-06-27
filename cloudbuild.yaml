@@ -116,7 +116,8 @@ steps:
       "dataproc_jobs/bronze.py",
       "dataproc_jobs/silver.py",
       "dataproc_jobs/gold.py",
-      "gs://${_PIPELINE_BUCKET}/scripts/"
+      "gs://${_PIPELINE_BUCKET}/scripts/",
+      "--project=${_PROJECT_ID}"
     ]
 
 
@@ -130,7 +131,8 @@ steps:
     [
       "storage","cp",
       "airflow/dag_end_to_end_pipeline.py",
-      "gs://${_COMPOSER_BUCKET}/dags/"
+      "gs://${_COMPOSER_BUCKET}/dags/",
+      "--project=${_PROJECT_ID}"
     ]
 
 
