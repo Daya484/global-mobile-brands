@@ -326,6 +326,28 @@ gcloud composer environments run mb-composer \
   variables -- list
 ```
 
+### 4e. Configure Airflow Email Notifications (SMTP)
+To get actual emails when the DAG execution succeeds or fails, configure Gmail SMTP overrides and add the `smtp_default` connection (replace the password placeholder with your 16-character Google App Password):
+
+1. **Add the Airflow SMTP connection**:
+```bash
+gcloud composer environments run mb-composer \
+  --location=$REGION \
+  connections add -- smtp_default \
+  --conn-type=email \
+  --conn-host=smtp.gmail.com \
+  --conn-login=dayasagarreddy2943@gmail.com \
+  --conn-password=ykqqzaokttfyqfad \
+  --conn-port=587
+```
+
+2. **Apply the Airflow configuration overrides**:
+```bash
+gcloud composer environments update mb-composer \
+  --location=$REGION \
+  --update-airflow-configs=email-email_backend=airflow.utils.email.send_email_smtp,smtp-smtp_host=smtp.gmail.com,smtp-smtp_port=587,smtp-smtp_ssl=False,smtp-smtp_starttls=True,smtp-smtp_user=dayasagarreddy2943@gmail.com,smtp-smtp_mail_from=dayasagarreddy2943@gmail.com
+```
+
 ---
 
 ## 🚀 STEP 5 — Trigger the Pipeline
