@@ -290,6 +290,11 @@ export PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format="value(pro
 gcloud iam service-accounts add-iam-policy-binding $SA_EMAIL \
   --member="serviceAccount:service-${PROJECT_NUMBER}@cloudcomposer-accounts.iam.gserviceaccount.com" \
   --role="roles/composer.ServiceAgentV2Ext"
+
+# Grant Editor role to Google APIs Service Agent
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:${PROJECT_NUMBER}@cloudservices.gserviceaccount.com" \
+  --role="roles/editor"
 ```
 
 #### Step 1.5 — Create GCS Buckets
