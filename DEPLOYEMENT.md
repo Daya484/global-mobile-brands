@@ -106,6 +106,7 @@ for ROLE in \
   roles/dataproc.worker \
   roles/bigquery.dataEditor \
   roles/bigquery.jobUser \
+  roles/bigquery.readSessionUser \
   roles/run.developer \
   roles/composer.worker \
   roles/iam.serviceAccountUser \
