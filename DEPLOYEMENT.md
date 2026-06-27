@@ -105,7 +105,7 @@ for ROLE in \
   roles/dataproc.editor \
   roles/bigquery.dataEditor \
   roles/bigquery.jobUser \
-  roles/run.invoker \
+  roles/run.developer \
   roles/composer.worker \
   roles/logging.logWriter; do
   gcloud projects add-iam-policy-binding $PROJECT_ID \
