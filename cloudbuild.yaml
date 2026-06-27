@@ -113,9 +113,10 @@ steps:
   args:
     [
       "storage","cp",
-      "dataproc_jobs/",
-      "gs://${_PIPELINE_BUCKET}/scripts/",
-      "--recursive"
+      "dataproc_jobs/bronze.py",
+      "dataproc_jobs/silver.py",
+      "dataproc_jobs/gold.py",
+      "gs://${_PIPELINE_BUCKET}/scripts/"
     ]
 
 
@@ -128,9 +129,8 @@ steps:
   args:
     [
       "storage","cp",
-      "airflow/",
-      "gs://${_COMPOSER_BUCKET}/dags/",
-      "--recursive"
+      "airflow/dag_end_to_end_pipeline.py",
+      "gs://${_COMPOSER_BUCKET}/dags/"
     ]
 
 
