@@ -61,11 +61,6 @@ def list_excel_files(bucket, source_prefix, excel_exts, run_date_yyyymmdd, count
         if country_filter and country.upper() != country_filter.upper():
             continue
 
-        if run_date_yyyymmdd:
-            base = os.path.basename(blob.name)
-            if f"_{run_date_yyyymmdd}" not in base:
-                continue
-
         result.setdefault(country, []).append(blob.name)
 
     return result
