@@ -74,11 +74,6 @@ def list_files(
         if not any(blob.name.lower().endswith(ext) for ext in extensions):
             continue
 
-        if run_date_yyyymmdd:
-            basename = blob.name.split("/")[-1]  # check filename only
-            if run_date_yyyymmdd not in basename:
-                continue
-
         files.append(blob.name)
 
     log.info("Found %d file(s) under gs://%s/%s/", len(files), bucket.name, prefix)
