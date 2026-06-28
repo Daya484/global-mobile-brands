@@ -48,6 +48,7 @@ from pyspark.sql.functions import (
     explode,            # expand one array row into multiple rows (one per element)
     array,              # create an array column from a list of values
     struct,             # combine multiple columns into one nested STRUCT column
+    coalesce,           # returns the first non-null value
 )
 
 logging.basicConfig(
@@ -217,7 +218,7 @@ def build_gold(fact_df, dim_calender, dim_market, dim_product, dim_customer):
     gold_df = gold_joined.select(
 
         # Flat top-level columns
-        col("p.brand").alias("tech_brand_name"),
+        coalesce(col("f.Brand"), col("p.brand")).alias("tech_brand_name"),
         lit(None).cast("string").alias("brand_segment"),  # not yet populated — placeholder
         col("m.market_name").alias("tech_orga_country_name"),
 
@@ -243,8 +244,8 @@ def build_gold(fact_df, dim_calender, dim_market, dim_product, dim_customer):
 
         # ── PRODUCT STRUCT: what was sold ──────────────────────────────────
         struct(
-            col("p.ean_code").alias("product_code"),              # barcode
-            col("p.brand").alias("brand"),                        # "Samsung"
+            col("f.EAN_code").alias("product_code"),                              # barcode from fact table
+            coalesce(col("f.Brand"), col("p.brand")).alias("brand"),              # Brand (prefer fact)
             col("p.model").alias("model"),                        # "Galaxy S24"
             col("p.display_specification").alias("display"),      # "6.2-inch AMOLED"
             col("p.processor_chipset").alias("processor"),        # "Snapdragon 8 Gen 3"
