@@ -246,7 +246,7 @@ def build_gold(fact_df, dim_calender, dim_market, dim_product, dim_customer):
         struct(
             col("f.EAN_code").alias("product_code"),                              # barcode from fact table
             coalesce(col("f.Brand"), col("p.brand")).alias("brand"),              # Brand (prefer fact)
-            col("p.model").alias("model"),                        # "Galaxy S24"
+            col("f.Model").alias("model"),                        # model from fact table
             col("p.display_specification").alias("display"),      # "6.2-inch AMOLED"
             col("p.processor_chipset").alias("processor"),        # "Snapdragon 8 Gen 3"
             col("p.front_camera").alias("rear_camera"),           # front camera spec

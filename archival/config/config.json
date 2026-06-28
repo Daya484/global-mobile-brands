@@ -12,5 +12,5 @@
   "max_workers": 16,
   "log_level": "INFO",
 
-  "skip_if_destination_exists": true
+  "skip_if_destination_exists": false
 }
