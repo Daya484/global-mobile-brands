@@ -228,7 +228,7 @@ with DAG(
         task_id="bronze",
         project_id=PROJECT_ID,
         region=REGION,
-        batch_id="bronze-{{ ds }}",  # ✅ e.g. bronze-2026-05-23
+        batch_id="bronze-{{ dag_run.start_date.strftime('%Y-%m-%d-%H%M%S') }}",
         batch=dataproc_batch("bronze.py"),
     )
 
@@ -239,7 +239,7 @@ with DAG(
         task_id="silver",
         project_id=PROJECT_ID,
         region=REGION,
-        batch_id="silver-{{ ds }}",  # ✅ e.g. silver-2026-05-23
+        batch_id="silver-{{ dag_run.start_date.strftime('%Y-%m-%d-%H%M%S') }}",
         batch=dataproc_batch("silver.py"),
     )
 
@@ -250,7 +250,7 @@ with DAG(
         task_id="gold",
         project_id=PROJECT_ID,
         region=REGION,
-        batch_id="gold-{{ ds }}",  # ✅ e.g. gold-2026-05-23
+        batch_id="gold-{{ dag_run.start_date.strftime('%Y-%m-%d-%H%M%S') }}",
         batch=dataproc_batch("gold.py"),
         retries=0
     )
